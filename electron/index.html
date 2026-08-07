@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>rapid-docs</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="top-bar">
+      <span id="active-repo-path"></span>
+      <div id="repo-actions" class="hidden">
+        <button id="top-bar-menu-button" title="Menu"><span class="icon" data-icon="menu"></span></button>
+      </div>
+      <span id="switch-repo-status"></span>
+    </div>
+    <div id="empty-state" class="hidden">
+      <span class="icon" data-icon="folder"></span>
+      <p>No repository open.</p>
+      <button id="open-repo-button" class="primary">Open a repository</button>
+      <div id="recent-workspaces">
+        <h2>Workspaces</h2>
+        <div id="recent-workspaces-list"></div>
+      </div>
+    </div>
+
+    <div id="app-body">
+      <div id="file-list"></div>
+      <div id="file-list-resize-handle" title="Drag to resize"></div>
+      <div id="content-pane">
+        <div id="current-file">No file selected</div>
+        <div id="editor-area">
+          <div id="tab-strip"></div>
+          <div id="file-content-editor"></div>
+          <div id="doc-bar">
+            <textarea id="doc-text-input" rows="2" placeholder="Select some code above, then describe it here..."></textarea>
+            <button id="write-doc-button" class="primary">Document Selection</button>
+          </div>
+        </div>
+        <div id="panel-resize-handle" title="Drag to resize"></div>
+        <div id="status-panel">
+          <div id="status-tab-bar">
+            <button class="status-tab-button active" data-status-tab="problems">Problems<span class="status-tab-count"></span></button>
+            <button class="status-tab-button" data-status-tab="activity">Activity</button>
+            <button class="status-tab-button" data-status-tab="archive">Archive<span class="status-tab-count"></span></button>
+            <button class="status-tab-button" data-status-tab="dashboard">Dashboard<span class="status-tab-count"></span></button>
+            <span class="status-tab-spacer"></span>
+            <button id="status-clear-selected-button">Clear Selected</button>
+            <button id="status-clear-all-button">Clear All</button>
+            <button id="panel-close-button" title="Close panel (Ctrl+Shift+I to reopen)"><span class="icon" data-icon="discard"></span></button>
+          </div>
+          <div id="problems-tab" class="status-tab-content active"></div>
+          <div id="activity-tab" class="status-tab-content"></div>
+          <div id="archive-tab" class="status-tab-content">
+            <div id="archive-list"></div>
+            <div id="archive-attach-bar">
+              <button id="attach-archive-button" class="primary"><span class="icon" data-icon="attach"></span> Attach here</button>
+              <div id="archive-attach-status"></div>
+            </div>
+          </div>
+          <div id="dashboard-tab" class="status-tab-content">
+            <div id="messages-list"></div>
+          </div>
+        </div>
+      </div>
+      <div id="documented-sections">
+        <h3>Documented sections</h3>
+        <div id="documented-sections-list"></div>
+      </div>
+    </div>
+
+    <script src="vs/loader.js"></script>
+    <script src="renderer.js"></script>
+  </body>
+</html>

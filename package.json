@@ -1,0 +1,42 @@
+{
+  "name": "rapid-docs",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "build": "nest build",
+    "start": "nest start",
+    "start:dev": "nest start --watch",
+    "build:electron": "tsc -p electron/tsconfig.json && node electron/copy-assets.js",
+    "build:all": "npm run build && npm run build:electron",
+    "start:electron": "npm run build:all && electron electron/dist/main.js"
+  },
+  "keywords": [],
+  "author": "Emmanuel Obolo",
+  "license": "MIT",
+  "devDependencies": {
+    "@babel/parser": "^8.0.4",
+    "@babel/types": "^8.0.4",
+    "@nestjs/cli": "^11.0.24",
+    "@nestjs/schematics": "^11.1.0",
+    "@types/jest": "^30.0.0",
+    "@types/node": "^26.1.1",
+    "electron": "^41.7.1",
+    "jest": "^30.4.2",
+    "playwright-core": "^1.62.0",
+    "ts-jest": "^29.4.12",
+    "tsx": "^4.23.1",
+    "typescript": "^6.0.3"
+  },
+  "dependencies": {
+    "@nestjs/common": "^11.1.28",
+    "@nestjs/core": "^11.1.28",
+    "@nestjs/platform-express": "^11.1.28",
+    "chokidar": "^4.0.3",
+    "monaco-editor": "^0.56.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  }
+}

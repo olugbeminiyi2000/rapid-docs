@@ -1,0 +1,305 @@
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --muted: #666666;
+  --border: #dddddd;
+  --panel-bg: #fafafa;
+  --hover-bg: #eeeeee;
+
+  --blue: #2166ac;
+  --blue-bg: #eaf1fb;
+  --green: #2e8b45;
+  --green-bg: #e6f4ea;
+  --red: #c0392b;
+  --red-bg: #fbe9e7;
+  --red-light: #c8703f;
+  --red-light-bg: #fdf0e6;
+
+  /* Spacing/typography scale -- a handful of steps, reused everywhere,
+     instead of ad hoc pixel values scattered per element. */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 20px;
+
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-lg: 15px;
+}
+
+[data-theme="dark"] {
+  --bg: #1e1e1e;
+  --fg: #e0e0e0;
+  --muted: #9a9a9a;
+  --border: #3c3c3c;
+  --panel-bg: #252526;
+  --hover-bg: #2a2d2e;
+
+  --blue: #6ea8dc;
+  --blue-bg: #1c3049;
+  --green: #6bbf78;
+  --green-bg: #1e3620;
+  --red: #e0685a;
+  --red-bg: #3a1f1c;
+  --red-light: #e0a37d;
+  --red-light-bg: #3a2a1c;
+}
+
+* { box-sizing: border-box; }
+body { display: flex; flex-direction: column; height: 100vh; margin: 0; font-family: sans-serif; font-size: var(--font-size-base); background: var(--bg); color: var(--fg); }
+
+#top-bar { display: flex; align-items: center; gap: var(--space-sm); padding: var(--space-sm); border-bottom: 1px solid var(--border); font-size: var(--font-size-sm); }
+#top-bar #active-repo-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+#repo-actions { display: flex; align-items: center; gap: var(--space-sm); }
+#top-bar #switch-repo-status { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#top-bar #switch-repo-status.status-error { color: var(--red); background: var(--red-bg); font-weight: 600; padding: var(--space-xs) var(--space-sm); border-radius: 4px; }
+
+button { display: inline-flex; align-items: center; gap: var(--space-xs); background: var(--panel-bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: var(--space-xs) var(--space-sm); cursor: pointer; font-size: var(--font-size-sm); }
+button:hover { background: var(--hover-bg); }
+button.primary { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); }
+button.danger { background: var(--red-bg); border-color: var(--red); color: var(--red); }
+.icon { display: inline-flex; align-items: center; }
+.icon svg { display: block; }
+
+.hidden { display: none !important; }
+
+/* Shown instead of #app-body when no repo is active -- the OS folder-picker
+   itself only ever appears as a result of clicking this button (or "Switch
+   repository"), never automatically on launch. */
+#empty-state { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-md); color: var(--muted); }
+#empty-state .icon svg { width: 48px; height: 48px; }
+#empty-state p { margin: 0; font-size: var(--font-size-lg); }
+
+/* Hidden via JS (not :has(), for consistency with every other conditional
+   visibility rule in this file) whenever there's nothing recent to show. */
+#recent-workspaces { width: 100%; max-width: 420px; text-align: left; margin-top: var(--space-sm); }
+#recent-workspaces h2 { font-size: var(--font-size-sm); font-weight: 600; margin: 0 0 var(--space-sm) 0; color: var(--fg); }
+.workspace-row { cursor: pointer; padding: var(--space-sm); margin-bottom: var(--space-xs); border: 1px solid var(--border); border-radius: 6px; }
+.workspace-row:hover { background: var(--hover-bg); }
+.workspace-row .workspace-name { font-weight: 600; color: var(--fg); }
+.workspace-row .workspace-path { color: var(--muted); font-size: var(--font-size-sm); margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-show-more { cursor: pointer; color: var(--blue); text-align: center; padding: var(--space-xs); font-size: var(--font-size-sm); }
+.workspace-show-more:hover { text-decoration: underline; }
+
+/* A heavy real repo can leave the main process busy long enough for the
+   window itself to look unresponsive -- this is the only visible signal a
+   click actually registered until the open genuinely finishes or fails. */
+#recent-workspaces-list.disabled { pointer-events: none; opacity: 0.6; }
+.workspace-row.opening { opacity: 0.7; cursor: wait; }
+.workspace-spinner { display: none; margin-right: var(--space-xs); }
+.workspace-row.opening .workspace-spinner { display: inline-flex; vertical-align: middle; }
+
+.icon-spin { display: inline-flex; animation: rapid-docs-spin 0.8s linear infinite; }
+@keyframes rapid-docs-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+/* App body: file tree, editor, and documented-sections all on screen
+   together, always -- Problems/Activity/Archive/Dashboard are tabs in the
+   panel below the editor rather than separate destinations, specifically
+   because Archive's own core action (attach an archived doc to a fresh
+   selection) needs the file tree and editor visible at the same time as the
+   archive list, and switching away to a separate view made that impossible. */
+#app-body { flex: 1; display: flex; min-height: 0; }
+
+/* Width is JS-driven now (an inline style, set at startup from a persisted
+   preference and updated live while dragging #file-list-resize-handle) --
+   220px here is only the default before that ever runs; flex-shrink:0
+   keeps it from being silently resized by flex distribution instead of the
+   drag handle, the same reasoning #status-panel already uses. */
+#file-list { width: 220px; flex-shrink: 0; overflow-y: auto; overflow-x: auto; border-right: 1px solid var(--border); padding: var(--space-sm); font-size: var(--font-size-sm); white-space: nowrap; }
+
+/* Draggable divider between the file tree and the editor -- see
+   renderer.js's file-list-resize handlers for the actual drag mechanics
+   and real min/max clamping (a fixed CSS limit can't account for the
+   window's current size). Same shape as #panel-resize-handle, just the
+   other axis. */
+#file-list-resize-handle { width: 6px; flex-shrink: 0; cursor: col-resize; background: var(--border); }
+#file-list-resize-handle:hover, #file-list-resize-handle.dragging { background: var(--blue); }
+
+.message-row { padding: var(--space-xs) var(--space-sm); font-size: var(--font-size-sm); font-family: monospace; border-radius: 4px; margin-bottom: var(--space-xs); }
+.message-row .badge { display: inline-block; min-width: 60px; font-weight: bold; }
+.message-row.info { background: var(--blue-bg); }
+.message-row.info .badge { color: var(--blue); }
+.message-row.warning { background: var(--red-light-bg); }
+.message-row.warning .badge { color: var(--red-light); }
+.message-row.error { background: var(--red-bg); }
+.message-row.error .badge { color: var(--red); }
+#messages-list .empty { color: var(--muted); font-size: var(--font-size-sm); }
+
+.tree-folder-header { cursor: pointer; padding: var(--space-xs) var(--space-sm); border-radius: 4px; font-weight: 600; }
+.tree-folder-header:hover { background: var(--hover-bg); }
+.tree-folder-header::before { content: "\25BE"; display: inline-block; width: 1em; color: var(--muted); }
+.tree-folder-header.collapsed::before { content: "\25B8"; }
+.tree-children { margin-left: var(--space-md); }
+.tree-children.collapsed { display: none; }
+
+.tree-file { cursor: pointer; padding: var(--space-xs) var(--space-sm); margin-left: var(--space-md); border-radius: 4px; }
+.tree-file:hover { background: var(--hover-bg); }
+.tree-file.active { background: var(--blue-bg); color: var(--blue); }
+
+#content-pane { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+#current-file { padding: var(--space-xs) var(--space-sm); font-weight: bold; border-bottom: 1px solid var(--border); }
+
+/* Holds the editor itself plus the doc-bar underneath it -- toggled as one
+   unit (hidden entirely when no file is selected, letting the panel below
+   expand into the freed space) rather than hiding Monaco and the doc-bar
+   as two separate, easy-to-desync steps. */
+#editor-area { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+#editor-area.hidden { display: none; }
+
+/* Horizontal scroll, deliberately, not wrapping -- "basically unlimited"
+   tabs per the user's own request means the strip has to grow sideways,
+   scrollable, rather than wrapping into a second row that would eat into
+   the editor's own vertical space. flex-shrink:0 on each tab keeps them at
+   their natural width instead of being squeezed to fit, which is what
+   actually forces the scroll instead of illegibly cramming everything in. */
+#tab-strip { display: flex; overflow-x: auto; flex-shrink: 0; border-bottom: 1px solid var(--border); }
+.editor-tab { display: flex; align-items: center; gap: var(--space-xs); padding: var(--space-xs) var(--space-sm); border-right: 1px solid var(--border); cursor: pointer; white-space: nowrap; flex-shrink: 0; color: var(--muted); font-size: var(--font-size-sm); }
+.editor-tab:hover { background: var(--hover-bg); }
+.editor-tab.active { background: var(--panel-bg); color: var(--fg); box-shadow: inset 0 -2px 0 var(--blue); }
+.editor-tab .tab-close { background: transparent; border: none; padding: 2px; border-radius: 3px; color: inherit; display: inline-flex; flex-shrink: 0; }
+.editor-tab .tab-close:hover { background: var(--border); }
+
+/* Draggable divider between the editor and the panel below it -- see
+   renderer.js's panel-resize handlers for the actual drag mechanics and
+   the real min/max clamping (a fixed CSS limit can't account for the
+   window's current size, which is exactly why this isn't just a CSS
+   resize:vertical). Hidden together with the panel itself when collapsed
+   (Ctrl+Shift+I) -- nothing to divide between once one side is gone. */
+#panel-resize-handle { height: 6px; flex-shrink: 0; cursor: row-resize; background: var(--border); }
+#panel-resize-handle:hover, #panel-resize-handle.dragging { background: var(--blue); }
+#panel-resize-handle.hidden { display: none; }
+
+/* Four tabs sharing the space #file-status used to occupy alone: Problems
+   (repo-truth, live-recomputed per file), Activity (a real, persistent log
+   of Document Selection attempts), Archive (browse/attach/discard, now
+   here specifically so the file tree and editor stay visible while picking
+   where to attach), and Dashboard (the same Problems data, repo-wide
+   instead of scoped to the current file). Folded in here rather than kept
+   as separate nav-rail destinations, so using the app never requires
+   navigating away from the file tree and editor.
+   Height is JS-driven now (an inline style, set at startup from a
+   persisted preference and updated live while dragging #panel-resize-handle)
+   rather than a fixed CSS max-height -- flex-shrink:0 keeps it from being
+   silently resized by flex distribution instead of the drag handle. The
+   .expanded override exists for the one case a fixed height is wrong: no
+   file selected at all, nothing for #editor-area to show, so the panel
+   should fill 100% of the freed space instead of sitting at its last
+   dragged/persisted height. */
+#status-panel { border-bottom: 1px solid var(--border); flex-shrink: 0; display: flex; flex-direction: column; overflow: hidden; }
+#status-panel.expanded { flex: 1 !important; height: auto !important; }
+#status-panel.hidden { display: none; }
+
+.status-tab-count { display: inline-block; min-width: 16px; padding: 0 4px; margin-left: var(--space-xs); border-radius: 8px; background: var(--blue-bg); color: var(--blue); font-size: 10px; font-weight: 700; text-align: center; }
+.status-tab-count:empty { display: none; }
+#status-tab-bar { display: flex; align-items: center; gap: var(--space-xs); padding: var(--space-xs) var(--space-sm); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.status-tab-button { background: transparent; border: none; border-radius: 4px; padding: var(--space-xs) var(--space-sm); cursor: pointer; color: var(--muted); font-size: var(--font-size-sm); }
+.status-tab-button:hover { background: var(--hover-bg); }
+.status-tab-button.active { background: var(--blue-bg); color: var(--blue); font-weight: 600; }
+.status-tab-spacer { flex: 1; }
+#status-tab-bar button#status-clear-selected-button,
+#status-tab-bar button#status-clear-all-button { font-size: 11px; }
+#panel-close-button { background: transparent; border: none; padding: var(--space-xs); color: var(--muted); }
+#panel-close-button:hover { background: var(--hover-bg); color: var(--fg); }
+.status-tab-content { display: none; overflow-y: auto; padding: var(--space-xs) var(--space-sm); flex: 1; }
+.status-tab-content.active { display: block; }
+
+/* Shared row style for both tabs: a checkbox (batch selection, never a
+   single "x" per row -- clearing is deliberately a bulk action, 1 to n at
+   once) plus the same severity chip look used everywhere else in the app.
+   Nothing here auto-dismisses on a timer anymore; only these checkboxes +
+   Clear Selected/Clear All remove anything, so a message never vanishes
+   out from under someone still reading it. */
+.clearable-row { display: flex; align-items: flex-start; gap: var(--space-xs); padding: var(--space-xs) var(--space-sm); font-size: var(--font-size-sm); font-family: monospace; border-radius: 4px; margin-bottom: var(--space-xs); }
+.clearable-row input[type="checkbox"] { margin-top: 2px; flex-shrink: 0; }
+.clearable-row .badge { display: inline-block; min-width: 60px; font-weight: bold; }
+.clearable-row.info { background: var(--blue-bg); }
+.clearable-row.info .badge { color: var(--blue); }
+.clearable-row.hint { background: var(--blue-bg); }
+.clearable-row.hint .badge { color: var(--blue); }
+.clearable-row.warning { background: var(--red-light-bg); }
+.clearable-row.warning .badge { color: var(--red-light); }
+.clearable-row.error { background: var(--red-bg); }
+.clearable-row.error .badge { color: var(--red); }
+.clearable-row.success { background: var(--green-bg); }
+.clearable-row.success .badge { color: var(--green); }
+.clearable-row .delete-record-button { font-size: 11px; flex-shrink: 0; margin-left: auto; }
+.clearable-row .clickable-problem { cursor: pointer; }
+.clearable-row .clickable-problem:hover { text-decoration: underline; }
+.clearable-row.active-highlight { outline: 2px solid var(--blue); outline-offset: -2px; }
+#problems-tab .empty, #activity-tab .empty { color: var(--muted); font-size: var(--font-size-sm); }
+
+#file-content-editor { flex: 1; min-height: 0; }
+
+#doc-bar { display: flex; gap: var(--space-xs); padding: var(--space-sm); border-top: 1px solid var(--border); align-items: flex-end; }
+#doc-text-input { flex: 1; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 4px; padding: var(--space-xs) var(--space-sm); font-size: var(--font-size-sm); font-family: inherit; resize: vertical; min-height: 2.6em; }
+
+#documented-sections { width: 260px; overflow-y: auto; border-left: 1px solid var(--border); padding: var(--space-sm); }
+#documented-sections h3 { margin: 0 0 var(--space-sm); font-size: var(--font-size-base); color: var(--muted); }
+.doc-section-row { cursor: pointer; padding: var(--space-sm); margin-bottom: var(--space-sm); border: 1px solid var(--green); background: var(--green-bg); border-radius: 6px; font-size: var(--font-size-sm); }
+.doc-section-row:hover { filter: brightness(0.97); }
+.doc-section-row .row-header { display: flex; justify-content: space-between; align-items: center; gap: var(--space-xs); }
+.doc-section-row .lines { font-weight: bold; color: var(--green); }
+.doc-section-row .text { color: var(--fg); margin-top: var(--space-xs); }
+.doc-section-row .clickable-doc-section:hover { text-decoration: underline; }
+.doc-section-row.active-highlight { outline: 2px solid var(--green); outline-offset: -2px; }
+.doc-section-row .row-actions { display: flex; gap: var(--space-xs); flex-shrink: 0; }
+.doc-section-row .row-actions button { font-size: 11px; }
+.doc-section-row .edit-input { width: 100%; box-sizing: border-box; font-size: var(--font-size-sm); margin-top: var(--space-xs); background: var(--bg); color: var(--fg); border: 1px solid var(--border); }
+#documented-sections .empty { color: var(--muted); font-size: var(--font-size-sm); }
+
+/* Archive tab -- browse/attach/discard, now living in the same panel as
+   Problems/Activity/Dashboard so the file tree and editor stay visible
+   while picking where to attach an archived doc. */
+.archive-row { cursor: pointer; padding: var(--space-sm); margin-bottom: var(--space-sm); border: 1px solid var(--border); border-radius: 6px; font-size: var(--font-size-sm); }
+.archive-row:hover { background: var(--hover-bg); }
+.archive-row.pending { border-color: var(--blue); background: var(--blue-bg); }
+.archive-row .row-header { display: flex; justify-content: space-between; align-items: center; gap: var(--space-xs); }
+.archive-row .origin { font-weight: bold; color: var(--fg); }
+.archive-row .text { color: var(--muted); margin-top: var(--space-xs); }
+.archive-row .discard-button { font-size: 11px; flex-shrink: 0; }
+/* Same hint already used for Problems (.clickable-problem) and Documented
+   sections (.clickable-doc-section) -- real feedback from way back in this
+   session ("it is too hard to know where to click to select an archive")
+   that never actually got wired up until now, lost among everything else. */
+.archive-row .clickable-archive:hover { text-decoration: underline; }
+#archive-list .empty { color: var(--muted); font-size: var(--font-size-sm); }
+#archive-attach-bar { border-top: 1px solid var(--border); padding-top: var(--space-sm); margin-top: var(--space-sm); }
+#archive-attach-status { font-size: var(--font-size-sm); font-weight: 600; min-height: 1em; }
+#archive-attach-status:empty { display: none; }
+#archive-attach-status.status-success { color: var(--green); background: var(--green-bg); padding: var(--space-xs) var(--space-sm); border-radius: 4px; }
+#archive-attach-status.status-error { color: var(--red); background: var(--red-bg); padding: var(--space-xs) var(--space-sm); border-radius: 4px; }
+#archive-attach-status.status-hint { color: var(--blue); background: var(--blue-bg); padding: var(--space-xs) var(--space-sm); border-radius: 4px; }
+
+.documented-region-decoration { background: rgba(46, 139, 69, 0.22); }
+.warning-region-decoration { background: rgba(200, 112, 63, 0.42); }
+.undocumented-region-decoration { background: rgba(33, 102, 172, 0.42); }
+
+/* Replaces Monaco's built-in right-click menu entirely -- built from what
+   rapid-docs actually does with a selection, not a generic editor menu. */
+.custom-context-menu {
+  position: fixed;
+  z-index: 1000;
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  padding: var(--space-xs);
+  min-width: 220px;
+}
+.custom-context-menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-md);
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: var(--space-xs) var(--space-sm);
+  border-radius: 4px;
+  font-size: var(--font-size-sm);
+}
+.custom-context-menu button:hover { background: var(--hover-bg); }
+/* Only present on items that pass item.shortcut (the top-bar menu; the
+   right-click context menu's own items never have a keyboard equivalent). */
+.menu-item-shortcut { color: var(--muted); font-size: 11px; flex-shrink: 0; }
