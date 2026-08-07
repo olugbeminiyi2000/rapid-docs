@@ -2,7 +2,7 @@
 
 A desktop tool that keeps hand-written documentation attached to code *structure*, not to line numbers — so a comment/note you write for a function stays correct even after the function moves, gets reformatted, or has code added around it, and gets flagged the moment the code it actually describes changes underneath it.
 
-> Status: **v0.0.1**, actively developed, Windows-only for now. Built as a personal project to explore AST-based tooling end to end — expect rough edges, and issues are welcome.
+> Status: **v0.1.0**, actively developed, Windows-only for now. Built as a personal project to explore AST-based tooling end to end — expect rough edges, and issues are welcome.
 
 ## The problem this solves
 
