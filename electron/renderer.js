@@ -1454,7 +1454,10 @@ function main() {
 
   async function loadActiveRepoPath() {
     const repoPath = await window.rapidDocs.getActiveRepoPath();
-    document.getElementById("active-repo-path").textContent = repoPath ?? "No repository selected.";
+    // Nothing here when no repo is open -- the centered empty-state message
+    // ("No repository open.") already says exactly that; repeating it in
+    // the top bar was just redundant clutter directly under the title bar.
+    document.getElementById("active-repo-path").textContent = repoPath ?? "";
     updateRepoVisibility(repoPath);
 
     // Monaco was created once, unconditionally, regardless of whether a repo
