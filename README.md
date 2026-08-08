@@ -1,4 +1,18 @@
+<p align="center">
+  <img src="electron/icon-256.png" alt="rapid-docs icon" width="96" />
+</p>
+
 # rapid-docs
+
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white)
+![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=flat&logo=javascript&logoColor=black)
+![Node.js](https://img.shields.io/badge/Node.js-339933?style=flat&logo=nodedotjs&logoColor=white)
+![NestJS](https://img.shields.io/badge/NestJS-E0234E?style=flat&logo=nestjs&logoColor=white)
+![Electron](https://img.shields.io/badge/Electron-47848F?style=flat&logo=electron&logoColor=white)
+![Monaco Editor](https://img.shields.io/badge/Monaco%20Editor-007ACC?style=flat&logo=visualstudiocode&logoColor=white)
+![Jest](https://img.shields.io/badge/Jest-C21325?style=flat&logo=jest&logoColor=white)
+![Git](https://img.shields.io/badge/Git-F05032?style=flat&logo=git&logoColor=white)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat)
 
 A desktop tool that keeps hand-written documentation attached to code *structure*, not to line numbers. A comment/note you write for a function stays correct even after the function moves, gets reformatted, or has code added around it, and gets flagged the moment the code it actually describes changes underneath it.
 
