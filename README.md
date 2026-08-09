@@ -42,11 +42,11 @@ Right-clicking a tab for VS Code-style close options:
 
 ## The problem this solves
 
-Most "documentation" ends up as either:
-- A comment glued to a specific line, which silently goes stale the moment the code around it shifts, or
-- A wiki page nobody remembers to update, disconnected from the code entirely.
+When I'm solving something non-trivial, I like to fully explain my reasoning: why I picked one approach over another, what a piece of state is actually tracking, what would break if it were done differently. Writing that directly in the file as a comment forces a bad tradeoff: write enough for it to actually be useful, and the file gets cluttered; keep it short enough to stay clean, and the reasoning gets lost.
 
-rapid-docs instead documents a specific **AST node** (a function, a block, an expression) inside a real file in a real git repo. Because the link is structural rather than textual, whitespace changes, reordering, and reformatting don't break it, but an actual change to the documented code's shape does, and gets surfaced as drift.
+The natural fix is to move that documentation outside the file entirely. But an ordinary comment gets its connection to the right code for free, it's physically sitting right above it in the same text. Move the note somewhere else, and that connection has to be built deliberately, since nothing about the note's position tells you what it's about anymore.
+
+rapid-docs' answer is to anchor a note to a specific **AST node** (a function, a block, an expression) instead of a position. Because the link is structural rather than positional, whitespace changes, reordering, and reformatting don't break it, but an actual change to the documented code's shape does, and gets surfaced as drift.
 
 ## How it works
 
