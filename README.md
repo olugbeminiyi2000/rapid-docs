@@ -52,7 +52,7 @@ rapid-docs' answer is to anchor a note to a specific **AST node** (a function, a
 
 1. Open a local git repository in the app.
 2. Select a piece of code in the editor and write a short description for it.
-3. rapid-docs snaps your selection to the nearest enclosing AST node and stores a structural fingerprint of it: not the raw text, and not a line number.
+3. rapid-docs snaps your selection to the AST nodes between that highlighted section and stores a structural fingerprint of it: not the raw text, and not a line number.
 4. From then on, every commit and every live file save is checked against that fingerprint. If the documented node's structure has genuinely changed, it's reported as drift; if the code around it changed but the node itself didn't, nothing fires.
 
 Documentation is stored as plain JSON, one file per source file, inside a `.rapid-docs/` folder next to the code it describes: versionable in the same repo, readable without the app, and requiring no external database.
