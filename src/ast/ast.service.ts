@@ -46,7 +46,15 @@ export class AstService {
   parseSource(code: string, relativePath: string): ParseResult {
     const usesJsx = /\.(jsx|tsx)$/.test(relativePath);
     try {
-      const ast = parser.parse(code, { errorRecovery: true, plugins: usesJsx ? ["typescript", "jsx"] : ["typescript"] });
+      // "typescript" alone doesn't cover decorator syntax (@Injectable,
+      // @Module, @Controller) -- "decorators-legacy" specifically matches
+      // the classic experimentalDecorators convention NestJS (and Angular,
+      // TypeORM, MobX) use, as opposed to the newer, differently-positioned
+      // TC39 "decorators" plugin.
+      const plugins: parser.ParserPlugin[] = usesJsx
+        ? ["typescript", "jsx", "decorators-legacy"]
+        : ["typescript", "decorators-legacy"];
+      const ast = parser.parse(code, { errorRecovery: true, plugins });
       return { ast, errors: ast.errors ?? [], fatal: false };
     } catch (err: any) {
       return {

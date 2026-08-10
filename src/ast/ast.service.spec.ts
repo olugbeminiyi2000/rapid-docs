@@ -50,6 +50,28 @@ describe("AstService", () => {
       expect(result.fatal).toBe(true);
       expect(result.ast).toBeNull();
     });
+
+    // Real bug found via manual testing against rapid-docs' own NestJS
+    // source (the first time it was ever pointed at itself as a target
+    // repo, via the VSCode extension work): every file using a class
+    // decorator (@Injectable, @Module, @Controller) failed to parse,
+    // unconditionally. NestJS's decorators use the classic
+    // experimentalDecorators convention (confirmed in this repo's own
+    // tsconfig.json), which needs Babel's "decorators-legacy" plugin
+    // specifically -- "typescript" alone doesn't cover decorator syntax.
+    const decoratorCode = `@Injectable()\nclass GreetingService {\n  greet() {\n    return "hi";\n  }\n}\n`;
+
+    it("parses real decorator syntax (NestJS-style @Injectable) successfully", () => {
+      const result = service.parseSource(decoratorCode, "greeting.service.ts");
+      expect(result.fatal).toBe(false);
+      expect(result.ast).not.toBeNull();
+    });
+
+    it("parses decorator syntax in a .tsx file too", () => {
+      const result = service.parseSource(decoratorCode, "greeting.service.tsx");
+      expect(result.fatal).toBe(false);
+      expect(result.ast).not.toBeNull();
+    });
   });
 
   const sampleCode = `function greet(name) {
