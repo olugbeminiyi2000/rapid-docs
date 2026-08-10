@@ -75,11 +75,25 @@
         "title": "rapid-docs: Test LiveWatchService (Section 6)"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "rapidDocs",
+          "title": "rapid-docs",
+          "icon": "resources/icon.svg"
+        }
+      ]
+    },
     "views": {
-      "explorer": [
+      "rapidDocs": [
         {
           "id": "rapidDocsDocumentedSections",
-          "name": "rapid-docs: Documented Sections"
+          "name": "Documented Sections"
+        },
+        {
+          "id": "rapidDocsTestFoundation",
+          "name": "Webview Foundation Test (7.1)",
+          "type": "webview"
         }
       ]
     },
