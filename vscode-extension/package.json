@@ -65,6 +65,10 @@
       {
         "command": "rapidDocs.testDocumentationService",
         "title": "rapid-docs: Test DocumentationService (Section 4)"
+      },
+      {
+        "command": "rapidDocs.testSyncService",
+        "title": "rapid-docs: Test SyncService (Section 5)"
       }
     ],
     "views": {

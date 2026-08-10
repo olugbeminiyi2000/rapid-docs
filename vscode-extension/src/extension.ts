@@ -713,6 +713,124 @@ class GreetingService {
     }
   });
   context.subscriptions.push(testDocumentationServiceDisposable);
+
+  // Section 5 (SyncService): sync() [only reconcile() was tested before],
+  // handleFileEvent, handleRenameEvent, checkFileOnDemand. sync()'s real
+  // branches (no commits yet / first-ever full scan / already up to date /
+  // a genuine commit diff with a rename) need actual git history under
+  // control, so a disposable scratch repo is used, never this real repo's
+  // own commits or sync pointer.
+  const testSyncServiceDisposable = vscode.commands.registerCommand("rapidDocs.testSyncService", () => {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder) {
+      vscode.window.showWarningMessage("rapid-docs: no workspace folder open.");
+      return;
+    }
+    const repoPath = folder.uri.fsPath;
+    const lines: string[] = [];
+    const scratchDir = mkdtempSync(join(tmpdir(), "rapid-docs-syncservice-scratch-"));
+    const relSmall = "vscode-extension/src/__syncservice_test_small__.ts";
+    const relLarge = "vscode-extension/src/__syncservice_test_large__.ts";
+    const absSmall = join(repoPath, relSmall);
+    const absLarge = join(repoPath, relLarge);
+
+    try {
+      // --- sync() branch 1: no commits yet ---
+      execFileSync("git", ["init"], { cwd: scratchDir });
+      execFileSync("git", ["config", "user.email", "test@rapid-docs.local"], { cwd: scratchDir });
+      execFileSync("git", ["config", "user.name", "rapid-docs test"], { cwd: scratchDir });
+      const reportNoCommits = syncService.sync(scratchDir);
+      lines.push(`sync() with zero commits: ${reportNoCommits.messages.length} message(s) (expected 0)`);
+
+      // --- sync() branch 2: first-ever sync -> fullScan ---
+      writeFileSync(join(scratchDir, "a.ts"), "export function alpha() {\n  return 1;\n}\n");
+      execFileSync("git", ["add", "."], { cwd: scratchDir });
+      execFileSync("git", ["commit", "-m", "first"], { cwd: scratchDir });
+      const reportFirstScan = syncService.sync(scratchDir);
+      const pointerAfterFirst = gitService.getLastSyncedCommit(scratchDir);
+      const headAfterFirst = gitService.getHeadCommit(scratchDir);
+      lines.push(
+        `sync() first-ever (fullScan): ${reportFirstScan.messages.length} message(s) (expected >=1, real undocumented function), pointer set correctly=${pointerAfterFirst === headAfterFirst}`
+      );
+
+      // --- sync() branch 3: already up to date ---
+      const reportUpToDate = syncService.sync(scratchDir);
+      lines.push(`sync() immediately again, no new commits: ${reportUpToDate.messages.length} message(s) (expected 0)`);
+
+      // --- sync() branch 4: a real commit diff, WITH a rename + a modification, and real storage to migrate ---
+      const { recordId: scratchRecordId } = documentationService.writeDoc(scratchDir, "a.ts", 0, "export function alpha() {\n  return 1;\n}\n".length, "Documents alpha.");
+      execFileSync("git", ["mv", "a.ts", "a-renamed.ts"], { cwd: scratchDir });
+      writeFileSync(join(scratchDir, "b.ts"), "export function beta() {\n  return 2;\n}\n");
+      execFileSync("git", ["add", "."], { cwd: scratchDir });
+      execFileSync("git", ["commit", "-m", "rename a, add b"], { cwd: scratchDir });
+      const reportDiff = syncService.sync(scratchDir);
+      const oldStorageGone = !existsSync(documentationService.storagePathFor(scratchDir, "a.ts"));
+      const newStorageExists = existsSync(documentationService.storagePathFor(scratchDir, "a-renamed.ts"));
+      const migratedStorage = documentationService.loadStorage(scratchDir, "a-renamed.ts");
+      lines.push(
+        `sync() real diff (rename a->a-renamed + add b): ${reportDiff.messages.length} message(s), old storage gone=${oldStorageGone}, new storage exists=${newStorageExists}, record survived migration=${!!migratedStorage.records[scratchRecordId]}`
+      );
+
+      // --- handleFileEvent: file exists (real check) ---
+      writeFileSync(absSmall, "export function gamma() {\n  return 3;\n}\n");
+      const eventExists = syncService.handleFileEvent(repoPath, relSmall);
+      lines.push(`handleFileEvent (file exists): ${eventExists.length} message(s) (expected >=1, real undocumented function)`);
+
+      // --- handleFileEvent: file deleted, with real prior documentation to archive ---
+      documentationService.writeDoc(repoPath, relSmall, 0, "export function gamma() {\n  return 3;\n}\n".length, "Documents gamma.");
+      unlinkSync(absSmall);
+      const eventDeleted = syncService.handleFileEvent(repoPath, relSmall);
+      const archiveAfterDelete = documentationService.loadArchive(repoPath);
+      const hasGammaArchiveEntry = archiveAfterDelete.some((e: { originalFileId: string }) => e.originalFileId === relSmall);
+      lines.push(`handleFileEvent (file deleted): ${eventDeleted.length} message(s), archived=${hasGammaArchiveEntry}`);
+      if (hasGammaArchiveEntry) {
+        const entry = archiveAfterDelete.find((e: { originalFileId: string }) => e.originalFileId === relSmall)!;
+        documentationService.discardArchivedRecord(repoPath, entry.id);
+      }
+
+      // --- handleRenameEvent (real repo, no git involved -- pure storage migration + check) ---
+      writeFileSync(absSmall, "export function delta() {\n  return 4;\n}\n");
+      const { recordId: deltaRecordId } = documentationService.writeDoc(repoPath, relSmall, 0, "export function delta() {\n  return 4;\n}\n".length, "Documents delta.");
+      const relSmallRenamed = "vscode-extension/src/__syncservice_test_small_renamed__.ts";
+      const renameMessages = syncService.handleRenameEvent(repoPath, relSmall, relSmallRenamed);
+      const renamedStorage = documentationService.loadStorage(repoPath, relSmallRenamed);
+      lines.push(
+        `handleRenameEvent: ${renameMessages.length} message(s), record survived migration=${!!renamedStorage.records[deltaRecordId]}`
+      );
+
+      // --- checkFileOnDemand: NOT skippable (small, already documented) -> null ---
+      const onDemandSmall = syncService.checkFileOnDemand(repoPath, relSmallRenamed);
+      lines.push(`checkFileOnDemand (small, documented): ${onDemandSmall === null ? "null (correct, no-op)" : `${onDemandSmall.length} messages (WRONG)`}`);
+
+      // --- checkFileOnDemand: genuinely skippable (>100KB, undocumented) -> real messages ---
+      const padding = "// padding\n".repeat(10_000); // well over LARGE_FILE_THRESHOLD_BYTES (100_000)
+      writeFileSync(absLarge, `${padding}export function epsilon() {\n  return 5;\n}\n`);
+      const onDemandLarge = syncService.checkFileOnDemand(repoPath, relLarge);
+      lines.push(
+        `checkFileOnDemand (>100KB, undocumented): ${onDemandLarge === null ? "null (WRONG, expected real messages)" : `${onDemandLarge.length} real message(s) (correct)`}`
+      );
+
+      vscode.window.showInformationMessage("rapid-docs: SyncService section test finished, see proof file for full results.");
+    } catch (err) {
+      lines.push(`ERROR: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+      vscode.window.showErrorMessage("rapid-docs: SyncService test failed partway, see proof file for what succeeded before that.");
+    } finally {
+      for (const abs of [absSmall, absLarge]) {
+        try {
+          if (existsSync(abs)) unlinkSync(abs);
+        } catch {
+          /* non-fatal */
+        }
+      }
+      try {
+        rmSync(scratchDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+      } catch {
+        /* non-fatal, matches the earlier GitService/Windows-EPERM lesson */
+      }
+      writeFileSync(join(tmpdir(), "rapid-docs-syncservice-proof.txt"), `${new Date().toISOString()}\n${lines.join("\n")}\n`);
+    }
+  });
+  context.subscriptions.push(testSyncServiceDisposable);
 }
 
 // electron/main.ts never needed an equivalent to this -- its whole process

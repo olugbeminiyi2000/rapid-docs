@@ -59,14 +59,20 @@ The remaining 9 methods verified via `rapidDocs.testDocumentationService`, one r
 
 **Real gap in the test's own cleanup, not `DocumentationService`:** `attachArchivedRecord` legitimately creates a brand new storage record for its target file, which the test's cleanup hadn't accounted for (only the three scratch source files were removed, not the storage `attachArchivedRecord` itself created). Found by checking `.rapid-docs/` directly afterward rather than assuming cleanup was complete; removed manually via PowerShell.
 
-## Section 5: `SyncService` — PARTIAL
+## Section 5: `SyncService` — CLOSED
 
 - [x] `reconcile` — thoroughly tested (397, then 590 after the parser fix, sampled and confirmed legitimate).
-- [ ] `sync` — **not tested.** This is the actual commit-based diff path, the one that runs on every real git commit, not just the one-time catch-up scan.
-- [ ] `handleFileEvent` — **not tested.** The live-edit path.
-- [ ] `handleRenameEvent` — **not tested.**
-- [ ] `checkFileOnDemand` — **not tested.** Backs the "catch up a large/skipped file the moment it's opened" behavior.
-- [ ] Skip/minified-density logic — untested in this context (though covered by `src/`'s own Jest suite, still worth a real check here since the extension is a different caller).
+
+`sync()`'s four real branches, and the other three methods, all verified via `rapidDocs.testSyncService` against a disposable scratch git repo (real commits, a real `git mv` rename) plus real scratch files in the workspace:
+
+- [x] `sync` — no-commits branch (0 messages, correct), first-ever-sync branch (real `fullScan`, found the real undocumented function, sync pointer confirmed set to the real current HEAD), already-up-to-date branch (0 messages on an immediate second call, correct), and a real commit-diff branch (a real `git mv` rename plus a new file, correctly detected the rename, migrated the existing documentation record's storage intact, and reported the one genuinely new undocumented function).
+- [x] `handleFileEvent` — both branches: file exists (real undocumented-function message), file deleted (real archive entry created from a previously-documented file).
+- [x] `handleRenameEvent` — real storage migration confirmed, existing record survived intact under the new path.
+- [x] `checkFileOnDemand` — both branches: `null` for a small, already-documented file (correct no-op), and real messages (10,001, exactly right: 10,000 padding comment lines each a genuine undocumented node, plus the one real function) for a genuinely 100KB+ undocumented file, confirming the large-file skip/catch-up path fires for real, not just in the isolated Jest suite.
+
+Skip/minified-density logic itself (not just the outcome) is already covered by `src/`'s own Jest suite; this section confirms the extension's own call path reaches it correctly, not a duplicate of that lower-level coverage.
+
+**Real gap in the test's own cleanup, not `SyncService`:** the `handleRenameEvent` step's real migrated storage record was never explicitly discarded by the test, found afterward via `.rapid-docs/` still containing it and removed manually.
 
 ## Section 6: `LiveWatchService` — PARTIAL
 
