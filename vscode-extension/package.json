@@ -61,6 +61,10 @@
       {
         "command": "rapidDocs.testGitService",
         "title": "rapid-docs: Test GitService (Section 3)"
+      },
+      {
+        "command": "rapidDocs.testDocumentationService",
+        "title": "rapid-docs: Test DocumentationService (Section 4)"
       }
     ],
     "views": {

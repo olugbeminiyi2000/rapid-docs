@@ -37,20 +37,27 @@ All 7 real methods verified via `rapidDocs.testGitService`:
 
 **Real bug found in the test harness itself, not `GitService`:** the scratch-repo cleanup (`rmSync`) hit a genuine Windows `EPERM` (a file lock held on something inside `.git/` longer than expected), even after adding `maxRetries`/`retryDelay`. Fixed by making cleanup failure non-fatal (log and continue) so a stubborn OS-level lock can never again mask real test evidence gathered before it. Leftover scratch dirs cleaned up manually via PowerShell afterward.
 
-## Section 4: `DocumentationService` — PARTIAL, the big one
+## Section 4: `DocumentationService` — CLOSED, the big one
 
 - [x] `writeDoc` — directly tested (`testWriteDoc`), real record written and confirmed via the Documented Sections tree.
 - [x] `findDocumentedNodes` — directly tested, correct results shown in the tree and used for decorations.
 - [x] `deleteRecord` — directly tested, confirmed via screenshot that real on-disk storage was genuinely emptied.
 - [x] `loadStorage` — exercised directly as part of the Documented Sections collapsing logic.
-- [x] `checkFile`/`generateMessages` — exercised transitively via `reconcile()` (590 real, sampled-and-verified messages).
-- [ ] `findRecordForSelection` — **not implemented at all.** Needed for the right-click "Edit documentation"/"Delete documentation" menu (deciding whether a selection already matches a record).
-- [ ] `findStaleRecordForSelection` — **not implemented.** Needed for "Update documentation (code changed)".
-- [ ] `updateDriftedDoc` — **not implemented.** The actual drift-resolution flow.
-- [ ] `editDocText` — **not implemented.** The Documented Sections tree currently only has delete/copy wired, not edit.
-- [ ] `renameFile` — **not implemented/untested.** Matters when a documented file gets renamed.
-- [ ] `handleDeletedFile` — **not implemented/untested.** Matters when a documented file gets deleted.
-- [ ] `loadArchive`, `attachArchivedRecord`, `discardArchivedRecord` — **not implemented at all.** The entire Archive feature.
+- [x] `checkFile`/`generateMessages` — exercised transitively via `reconcile()` (590 real, sampled-and-verified messages), and directly via the drift scenario below.
+
+The remaining 9 methods verified via `rapidDocs.testDocumentationService`, one real, sequential, multi-step scenario (not 9 isolated calls): a real function was written and documented, then genuinely drifted (one statement changed, one left untouched, producing a real `partially_stale` result, not a forced one), resolved, edited, renamed, deleted (producing a real archive entry), a second file independently deleted (a second real archive entry), then one archived entry reattached and the other discarded. Every step checked against the REAL result of the previous step, not a predicted value (e.g. `findStaleRecordForSelection` was called using the actual `matchingRanges` `checkFile` really returned, not a guessed range):
+
+- [x] `findRecordForSelection` — exact-match selection correctly found the just-written record; a trivial 1-character selection correctly returned `null`.
+- [x] `findStaleRecordForSelection` — using the real anchor range from a genuine `partially_stale` `checkFile` result, correctly found the drifted record.
+- [x] `updateDriftedDoc` — old record confirmed gone from storage afterward, new record confirmed present.
+- [x] `editDocText` — `docText` confirmed changed in storage afterward.
+- [x] `renameFile` — old storage path confirmed gone, new storage path confirmed exists.
+- [x] `handleDeletedFile` — real messages returned, storage file confirmed removed, tested independently on two different files.
+- [x] `loadArchive` — both real archive entries (from the two `handleDeletedFile` calls) confirmed present.
+- [x] `attachArchivedRecord` — new record created on fresh code carrying the EXACT correct `docText` through the whole earlier chain (write → drift → update → edit → rename → delete → archive → attach all preserved the text correctly), archive count confirmed to shrink by one.
+- [x] `discardArchivedRecord` — entry confirmed no longer present in the archive afterward.
+
+**Real gap in the test's own cleanup, not `DocumentationService`:** `attachArchivedRecord` legitimately creates a brand new storage record for its target file, which the test's cleanup hadn't accounted for (only the three scratch source files were removed, not the storage `attachArchivedRecord` itself created). Found by checking `.rapid-docs/` directly afterward rather than assuming cleanup was complete; removed manually via PowerShell.
 
 ## Section 5: `SyncService` — PARTIAL
 
