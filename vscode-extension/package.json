@@ -39,8 +39,44 @@
       {
         "command": "rapidDocs.testDecorations",
         "title": "rapid-docs: Test Decorations (highlight documented regions)"
+      },
+      {
+        "command": "rapidDocs.revealDocumentedSection",
+        "title": "rapid-docs: Reveal Documented Section"
+      },
+      {
+        "command": "rapidDocs.copyDocumentedSection",
+        "title": "rapid-docs: Copy Documentation Text",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "rapidDocs.deleteDocumentedSection",
+        "title": "rapid-docs: Delete Documentation",
+        "icon": "$(trash)"
       }
-    ]
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "rapidDocsDocumentedSections",
+          "name": "rapid-docs: Documented Sections"
+        }
+      ]
+    },
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "rapidDocs.copyDocumentedSection",
+          "when": "view == rapidDocsDocumentedSections && viewItem == rapidDocsSection",
+          "group": "inline"
+        },
+        {
+          "command": "rapidDocs.deleteDocumentedSection",
+          "when": "view == rapidDocsDocumentedSections && viewItem == rapidDocsSection",
+          "group": "inline"
+        }
+      ]
+    }
   },
   "scripts": {
     "compile": "tsc -p ./"
