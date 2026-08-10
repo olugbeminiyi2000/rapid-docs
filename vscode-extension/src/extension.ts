@@ -612,12 +612,50 @@ class GreetingService {
     const relBroken = "vscode-extension/src/__docservice_test_broken__.ts";
     const absBroken = join(repoPath, relBroken);
 
+    const relD = "vscode-extension/src/__docservice_test_d__.ts";
+    const absD = join(repoPath, relD);
+
     try {
       // --- writeDoc + findRecordForSelection (found / not found) ---
       const originalContent = "function calculate(a, b) {\n  const sum = a + b;\n  return sum;\n}\n";
       writeFileSync(absA, originalContent);
       const { recordId: recordId1 } = documentationService.writeDoc(repoPath, relA, 0, originalContent.length, "Adds two numbers.");
       lines.push(`writeDoc: wrote record ${recordId1}`);
+
+      // --- writeDoc: refuses the exact same highlight twice -- a real
+      // duplicate-prevention guard, never exercised before this. ---
+      let duplicateRejected = false;
+      try {
+        documentationService.writeDoc(repoPath, relA, 0, originalContent.length, "Duplicate attempt.");
+      } catch {
+        duplicateRejected = true;
+      }
+      lines.push(`writeDoc duplicate rejection (same file, same exact selection, twice): threw=${duplicateRejected} (expected true)`);
+
+      // --- findRecordForSelection: finds a record even when the selection
+      // is LOOSER (wider) than the exact node boundary that was documented
+      // -- the actual real-world case, since a human drag-selection almost
+      // never lands exactly on an AST node's precise start/end. Uses a
+      // separate file whose documented span deliberately excludes trailing
+      // blank lines, then queries with a selection that includes them. ---
+      const functionOnly = "function loose() {\n  return 42;\n}\n";
+      const contentD = functionOnly + "\n\n";
+      writeFileSync(absD, contentD);
+      const { recordId: recordIdD } = documentationService.writeDoc(repoPath, relD, 0, functionOnly.length, "Loose selection test.");
+      const looseMatch = documentationService.findRecordForSelection(repoPath, relD, 0, contentD.length);
+      lines.push(
+        `findRecordForSelection (selection wider than the exact documented node span): ${looseMatch ? `found ${looseMatch.recordId}, matches=${looseMatch.recordId === recordIdD}` : "null (WRONG, expected a match despite the looser boundary)"}`
+      );
+
+      // --- deleteRecord: throws for a nonexistent record id -- every prior
+      // test only exercised the success path. ---
+      let deleteNonexistentThrew = false;
+      try {
+        documentationService.deleteRecord(repoPath, relD, "nonexistent-record-id-xyz");
+      } catch {
+        deleteNonexistentThrew = true;
+      }
+      lines.push(`deleteRecord on a nonexistent record id: threw=${deleteNonexistentThrew} (expected true)`);
 
       // --- canParseFile: real parseable file (true) and a genuinely broken one (false) ---
       const canParseGood = documentationService.canParseFile(repoPath, relA);
@@ -722,7 +760,7 @@ class GreetingService {
       lines.push(`ERROR: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
       vscode.window.showErrorMessage("rapid-docs: DocumentationService test failed partway, see proof file for what succeeded before that.");
     } finally {
-      for (const abs of [absA, absB, absC, absBroken]) {
+      for (const abs of [absA, absB, absC, absBroken, absD]) {
         try {
           if (existsSync(abs)) unlinkSync(abs);
         } catch {
@@ -823,6 +861,39 @@ class GreetingService {
         `reconcile() detecting a deleted-but-still-documented file (r.ts, never committed, never seen live): ${reconcileReport.messages.length} message(s), archived=${rFileArchived}`
       );
 
+      // --- sync() branch 4c: the diff loop specifically (not fullScan)
+      // skipping a large, undocumented, newly-added file -- a different
+      // code path from both fullScan (branch 2 above) and
+      // checkFileOnDemand (tested below), never independently confirmed
+      // to reach the same shared skip logic before now. ---
+      const largePaddingDiff = "// padding\n".repeat(10_000);
+      writeFileSync(join(scratchDir, "large-diff-undocumented.ts"), `${largePaddingDiff}export function largeDiffFunc() {\n  return 1;\n}\n`);
+      execFileSync("git", ["add", "."], { cwd: scratchDir });
+      execFileSync("git", ["commit", "-m", "add large undocumented file"], { cwd: scratchDir });
+      const reportLargeDiff = syncService.sync(scratchDir);
+      const largeFlaggedInDiff = reportLargeDiff.messages.some((m: { relativePath: string }) => m.relativePath === "large-diff-undocumented.ts");
+      lines.push(
+        `sync() diff loop skip: newly-added large-undocumented file via a real commit diff (not fullScan) skipped=${!largeFlaggedInDiff} (expected true, i.e. NOT flagged)`
+      );
+
+      // --- reconcile() does NOT correlate an uncommitted rename. Unlike
+      // sync()'s git-diff-based rename detection, reconcile() has no git
+      // history to correlate against (nothing here was ever committed), so
+      // a rename performed entirely while nothing was watching must be
+      // indistinguishable from an unrelated delete + add. ---
+      const contentRen = "export function renFunc() {\n  return \"ren\";\n}\n";
+      writeFileSync(join(scratchDir, "ren-original.ts"), contentRen);
+      documentationService.writeDoc(scratchDir, "ren-original.ts", 0, contentRen.length, "Documents renFunc.");
+      unlinkSync(join(scratchDir, "ren-original.ts"));
+      writeFileSync(join(scratchDir, "ren-new.ts"), contentRen); // raw fs rename, no git mv, no handleRenameEvent involved
+      const reconcileRenameReport = syncService.reconcile(scratchDir);
+      const archiveAfterRenameReconcile = documentationService.loadArchive(scratchDir);
+      const originalArchived = archiveAfterRenameReconcile.some((e: { originalFileId: string }) => e.originalFileId === "ren-original.ts");
+      const newFileFlaggedUndocumented = reconcileRenameReport.messages.some((m: { relativePath: string }) => m.relativePath === "ren-new.ts");
+      lines.push(
+        `reconcile() on an uncommitted rename (no git mv involved): old path archived=${originalArchived}, new path flagged as unrelated undocumented file=${newFileFlaggedUndocumented} (expected both true -- reconcile does NOT correlate renames)`
+      );
+
       // --- handleFileEvent: file exists (real check) ---
       writeFileSync(absSmall, "export function gamma() {\n  return 3;\n}\n");
       const eventExists = syncService.handleFileEvent(repoPath, relSmall);
@@ -861,6 +932,50 @@ class GreetingService {
       lines.push(
         `checkFileOnDemand (>100KB, undocumented): ${onDemandLarge === null ? "null (WRONG, expected real messages)" : `${onDemandLarge.length} real message(s) (correct)`}`
       );
+
+      // --- Resilience: a fullScan continues past one unparseable file and
+      // still checks the rest of the repo; handleFileEvent doesn't crash
+      // on a live edit that makes a file unparseable. Neither had been
+      // exercised before -- every prior test used only valid source.
+      // Also confirms fullScan's OWN skip-large-undocumented path (a
+      // third, separate caller of the shared skip logic, alongside the
+      // diff loop above and checkFileOnDemand). Uses a dedicated second
+      // scratch repo so this cleanly hits the first-ever-sync fullScan
+      // branch, isolated from scratchDir's already-established history. ---
+      const scratchDir2 = mkdtempSync(join(tmpdir(), "rapid-docs-syncservice-resilience-scratch-"));
+      try {
+        execFileSync("git", ["init"], { cwd: scratchDir2 });
+        execFileSync("git", ["config", "user.email", "test@rapid-docs.local"], { cwd: scratchDir2 });
+        execFileSync("git", ["config", "user.name", "rapid-docs test"], { cwd: scratchDir2 });
+        writeFileSync(join(scratchDir2, "good.ts"), "export function goodFunc() {\n  return 1;\n}\n");
+        writeFileSync(join(scratchDir2, "broken.ts"), "function broken( {{{ not valid syntax at all");
+        const largePaddingScan = "// padding\n".repeat(10_000);
+        writeFileSync(join(scratchDir2, "large-undocumented.ts"), `${largePaddingScan}export function largeFunc() {\n  return 1;\n}\n`);
+        execFileSync("git", ["add", "."], { cwd: scratchDir2 });
+        execFileSync("git", ["commit", "-m", "init"], { cwd: scratchDir2 });
+
+        const resilienceReport = syncService.sync(scratchDir2); // first-ever sync -> fullScan
+        const goodFlagged = resilienceReport.messages.some((m: { relativePath: string }) => m.relativePath === "good.ts");
+        const largeFlaggedInFullScan = resilienceReport.messages.some((m: { relativePath: string }) => m.relativePath === "large-undocumented.ts");
+        lines.push(
+          `fullScan resilience + skip: good.ts still flagged despite broken.ts present=${goodFlagged} (expected true, fullScan must not abort on the first parse failure), large-undocumented.ts skipped in the bulk pass=${!largeFlaggedInFullScan} (expected true, i.e. NOT flagged)`
+        );
+
+        let liveEditThrew = false;
+        let liveEditMessages: unknown[] = [];
+        try {
+          liveEditMessages = syncService.handleFileEvent(scratchDir2, "broken.ts");
+        } catch {
+          liveEditThrew = true;
+        }
+        lines.push(`handleFileEvent on an unparseable live file: threw=${liveEditThrew} (expected false), returned ${liveEditMessages.length} message(s) without crashing`);
+      } finally {
+        try {
+          rmSync(scratchDir2, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+        } catch {
+          /* non-fatal, matches the earlier Windows-EPERM lesson */
+        }
+      }
 
       vscode.window.showInformationMessage("rapid-docs: SyncService section test finished, see proof file for full results.");
     } catch (err) {
@@ -935,12 +1050,31 @@ class GreetingService {
       // uncorrelated, if contentCache has nothing for that exact path).
       writeFileSync(join(scratchDir, "p1.ts"), contentP1);
       writeFileSync(join(scratchDir, "p2.ts"), contentP2);
+      // .gitignore must exist and be committed BEFORE start() -- the watch
+      // set itself is built once at startup from the real ignored-paths
+      // list, so this has to be real, known-ignored state going in, not
+      // something added after the watcher is already running.
+      mkdirSync(join(scratchDir, "ignored-dir"), { recursive: true });
+      writeFileSync(join(scratchDir, ".gitignore"), "ignored-dir/\n");
       execFileSync("git", ["add", "."], { cwd: scratchDir });
       execFileSync("git", ["commit", "-m", "init"], { cwd: scratchDir });
 
       liveWatchService.on("messages", listener);
       await liveWatchService.start(scratchDir, correlationWindowMs);
       lines.push(`start() with a ${correlationWindowMs}ms correlation window: ok`);
+
+      // --- Test E: a gitignored directory's contents are never watched at
+      // all, not just filtered after the fact -- confirmed by writing a
+      // brand-new file inside it AFTER start() and getting zero events,
+      // even once the full correlation window has elapsed. Never exercised
+      // before now; this is real, previously-fixed-bug territory (the
+      // whole gitignore-watching performance investigation earlier in the
+      // project), completely unverified in the extension until now. ---
+      writeFileSync(join(scratchDir, "ignored-dir", "secret.ts"), "export function secretFunc() {\n  return \"secret\";\n}\n");
+      await wait(correlationWindowMs * 4);
+      const ignoredDirEvent = collected.find((e) => e.relativePaths.some((p) => p.includes("ignored-dir")));
+      lines.push(`Gitignored directory contents never watched: wrote a new file inside ignored-dir/ after start(), event fired=${!!ignoredDirEvent} (expected false -- must be excluded from the watch set itself, not filtered after the fact)`);
+      collected.length = 0;
 
       // --- Test A1: rename correlation, UNLINK arrives first -- exercises
       // handleAdd's own pendingUnlinks-matching loop specifically. A single
