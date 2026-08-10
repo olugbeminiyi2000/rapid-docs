@@ -3,6 +3,16 @@ import { writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
+// Module-scoped (not local to activate()) specifically so deactivate() can
+// reach them for real cleanup -- electron/main.ts never had to solve this,
+// its process just exits and the OS reclaims everything, but an extension
+// can be deactivated while VSCode itself keeps running (workspace closed,
+// extension disabled, VSCode reloaded), so leaving the watcher running and
+// the Nest context open would be a genuine, real resource leak, not a
+// hypothetical one.
+let liveWatchServiceRef: { stop: () => Promise<void> } | null = null;
+let appContextRef: { close: () => Promise<void> } | null = null;
+
 // Matches the real shape SyncService/DocumentationService produce (see
 // preload.ts's RendererMessage) -- ranges are byte offsets into the file's
 // raw text, the same convention Monaco used, not line/column.
@@ -185,11 +195,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const { LiveWatchService } = await import("../../dist/sync/live-watch.service.js");
 
   const appContext = await NestFactory.createApplicationContext(AppModule, { logger: false });
+  appContextRef = appContext;
   const gitService = appContext.get(GitService);
   const astService = appContext.get(AstService);
   const documentationService = appContext.get(DocumentationService);
   const syncService = appContext.get(SyncService);
   const liveWatchService = appContext.get(LiveWatchService);
+  liveWatchServiceRef = liveWatchService;
   // Real evidence the whole DI graph resolved, not just SyncService's own
   // constructor -- ping() and storagePathFor() are cheap, side-effect-free
   // calls that only succeed if each service is a genuine, correctly-wired
@@ -414,4 +426,20 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(testDecorationsDisposable);
 }
 
-export function deactivate(): void {}
+// electron/main.ts never needed an equivalent to this -- its whole process
+// exits and the OS reclaims the chokidar watcher and the Nest context for
+// free. An extension doesn't get that: VSCode can deactivate one without
+// exiting at all (workspace closed, extension disabled, window reloaded),
+// so without this, the watcher keeps running and the Nest context stays
+// open indefinitely, a real leak, not a hypothetical one, first found
+// completely empty and never caught until the parity audit specifically
+// asked "what happens on shutdown."
+export async function deactivate(): Promise<void> {
+  if (liveWatchServiceRef) {
+    await liveWatchServiceRef.stop();
+  }
+  if (appContextRef) {
+    await appContextRef.close();
+  }
+  writeFileSync(join(tmpdir(), "rapid-docs-deactivate-proof.txt"), `deactivated at ${new Date().toISOString()}\n`);
+}

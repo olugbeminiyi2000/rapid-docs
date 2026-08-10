@@ -1,56 +1,89 @@
 # VSCode Extension Parity Checklist
 
-**Foundational proof complete (verified, not assumed):** a minimal extension in this folder activates for real (`onStartupFinished`, confirmed via a timestamped proof file written to disk), registers commands that show up in and run from the Command Palette, correctly reads `vscode.window.activeTextEditor` (both the "no editor" and "real file + real selection" cases, confirmed via screenshots), and successfully creates a real `NestFactory.createApplicationContext(AppModule)` inside the Extension Host using the exact same dynamic-`import()` pattern as `electron/main.ts`'s `bootstrapEngine()`. A real `GitService.getHeadCommit()` call against this repo's own workspace folder returned `359137c1a134bff06a351de3f5418d7059ea4963`, confirmed to exactly match `git rev-parse HEAD`. The core hypothesis of this whole branch, that the backend is reusable as-is inside the Extension Host, is proven with real evidence.
+**Method (agreed 2026-08-10, mandatory going forward):** go section by section, in real dependency order, bottom-up. A section is only marked CLOSED once every real capability in it is verified with real evidence (a proof file, a screenshot, an exact value checked against ground truth), never just "looks right" or "compiles." This includes things that don't show up as a UI click, like resource cleanup, not just visible features. Do not start the next section until the current one is CLOSED. `electron/` and `src/` are never edited for extension-specific reasons, only for genuine, general bug fixes (like the `decorators-legacy` parser fix below); they stay as the untouched reference to check every section against.
 
-**`SyncService`/`AstService`/`DocumentationService` proof complete:** `SyncService.reconcile()`, called for real against this repo's own workspace folder, returned 397 real messages, sampled and confirmed legitimate (e.g. `vscode-extension/src/extension.ts: A ImportDeclaration near line 1 has no documentation yet.`), not garbage. Expected and correct: this repo's own code has never had rapid-docs' own documentation feature used on it, so every undocumented node across the whole real, current working tree (including the just-created `vscode-extension/` folder itself) legitimately shows up. Confirms all three services are correctly wired and producing accurate results inside the Extension Host.
+**Section order, and why:** (1) Extension lifecycle, since every later test depends on it running cleanly. (2) `AstService`, the deepest leaf dependency. (3) `GitService`, the other leaf, independent of `AstService`. (4) `DocumentationService`, built on `AstService`. (5) `SyncService`, built on `GitService` + `DocumentationService`. (6) `LiveWatchService`, built on `GitService` + `SyncService`. (7) UI layer, built only once 1-6 are fully proven, since Archive/the right-click menu/the compose Webview all depend on `DocumentationService` methods that weren't tested yet when those UI pieces were first touched. (8) A final explicit confirmation pass on everything deliberately not ported.
 
-**`LiveWatchService` proof complete:** started for real against this repo's own workspace folder (`liveWatchService.start(repoPath)`), then a real, disposable source file (`livewatch-probe.ts`, a genuine `export function` with no documentation) was created directly on disk from outside VSCode. The watcher's `"messages"` event fired within 1 second, correctly identified the new file's relative path and reported an accurate message ("ExportNamedDeclaration \"probe\" near line 1 has no documentation yet."). Probe file removed afterward, working tree left clean. All five core backend services (`GitService`, `AstService`, `DocumentationService`, `SyncService`, `LiveWatchService`) are now proven working for real inside the Extension Host. Backend integration phase is complete.
+---
 
-**Diagnostics (Problems panel) proof complete, and a real core-engine bug found and fixed along the way:** `vscode.languages.createDiagnosticCollection` populated from real `reconcile()` output, byte-offset `ranges` correctly converted to line/column via a real `TextDocument.positionAt()`, confirmed showing up in VSCode's actual native Problems panel with correct per-file groupings. While testing this against rapid-docs' own source (the first time any form of rapid-docs had ever been pointed at itself), found that `AstService.parseSource` (`src/ast/ast.service.ts:49`) only enabled Babel's `"typescript"` plugin, not `"decorators-legacy"`, so every file using a NestJS decorator (`@Injectable`, `@Module`, `@Controller`, essentially every service/module file) failed to parse entirely. This was a real bug in shared `src/` logic, not extension-specific, so it was fixed directly (2 new regression tests added to `ast.service.spec.ts`, confirmed failing before the fix and passing after, full suite 177/177 green). Re-tested after the fix: every previously-failing file now parses correctly (590 real messages total, up from 397, since the previously-failing files now genuinely contribute their real undocumented-node counts instead of one bare error each).
+## Section 1: Extension lifecycle — CLOSED
 
-**Decorations (documented-region highlighting) proof complete.** Confirmed there's no native VSCode equivalent for this specifically (Diagnostics only covers problems, nothing built-in shows "this code is fine and documented"), so a real `TextEditorDecorationType` was used, colored via the existing themed `diffEditor.insertedTextBackground` token rather than a hardcoded color, so it adapts to the user's actual theme. Tested end-to-end with real, self-created data: `rapidDocs.testWriteDoc` wrote one real documentation record via `documentationService.writeDoc()` against a real selection in `vscode-extension/src/extension.ts`, then `rapidDocs.testDecorations` called the real `findDocumentedNodes()` and correctly highlighted the exact same selected region, confirmed via screenshot. Test record removed afterward (`.rapid-docs/` directory deleted, confirmed via `Test-Path`, working tree left clean). All Diagnostics + decorations UI-layer proofs are now complete.
+- [x] `activate()` fires for real (`onStartupFinished`), confirmed via a timestamped proof file, cross-checked against actual current time (not just "a file exists") on every single relaunch throughout this whole effort.
+- [x] `NestFactory.createApplicationContext(AppModule)` succeeds inside the Extension Host, via the same dynamic-`import()` pattern `electron/main.ts`'s `bootstrapEngine()` uses (`import("../../dist/app.module.js")`, identical relative path depth).
+- [x] `deactivate()` — **found completely empty, a real, previously-uncaught resource leak.** `LiveWatchService`'s watcher was never stopped and the Nest application context was never closed on shutdown; `electron/main.ts` never needed this (its whole OS process just exits), but an extension can deactivate without VSCode exiting at all. Fixed by hoisting `liveWatchService`/`appContext` to module scope so `deactivate()` can reach them, calling `.stop()` and `.close()`. Verified for real, not just reviewed: started the watcher via `testLiveWatch`, closed the Extension Development Host window, confirmed a proof file was written that only gets reached after BOTH awaited cleanup calls succeed without throwing.
 
-**Documented Sections `TreeView` proof complete.** Replicated `electron/main.ts`'s exact `docs:findDocumentedNodes` handler logic (collapsing `findDocumentedNodes()`'s one-entry-per-matched-node output to one row per `recordId`, attaching `docText` from a separate `loadStorage()` call, since neither of those two things is in `src/` alone), registered under the Explorer sidebar (`contributes.views.explorer`) rather than a dedicated activity-bar container, since that would need a real icon asset not yet worth the polish time at this stage. Click-to-reveal, inline copy (`vscode.env.clipboard`), and inline delete (`documentationService.deleteRecord`, live-refreshing the tree after) all confirmed working end-to-end via screenshots, including confirming the record was genuinely removed from real storage on disk. File-scoped (refreshes on `onDidChangeActiveTextEditor`), matching how the Electron panel was always scoped to the currently open file. Remaining: Archive `TreeView` (same shape, should be quick), and the one compose Webview (the actual reason this project exists, still just a hardcoded placeholder string via `testWriteDoc` right now).
+## Section 2: `AstService` — NOT STARTED (method-by-method)
 
+- [ ] `parseSource` — only exercised transitively (via `reconcile()`/decorations/Documented Sections), never directly asserted against known input/output.
+- [ ] `walkAllNodes` — same, transitive only.
+- [ ] `filterByHighlight` — untested, transitively or otherwise.
+- [ ] `extractName` — untested, transitively or otherwise.
+- [ ] `hashNode` — only exercised transitively.
 
-Purpose: every real capability of the Electron app (`electron/`, `src/`), audited directly against the source, not from memory. `electron/` and `src/` are never edited while building this extension, they stay as the reference to check against. Check an item off only once the extension actually does the equivalent thing, verified against the real Electron behavior cited, not just "looks similar."
+## Section 3: `GitService` — PARTIAL
 
-## Backend services (reused unchanged, imported from the shared compiled `dist/`)
+- [x] `getHeadCommit` — directly tested, returned `359137c1a134bff06a351de3f5418d7059ea4963`, confirmed to exactly match `git rev-parse HEAD`.
+- [ ] `listTrackedFiles`, `listWorkingTreeFiles` — only exercised transitively via `reconcile()`, never directly.
+- [ ] `listIgnoredPaths` — untested.
+- [ ] `getLastSyncedCommit`/`setLastSyncedCommit` — untested. These matter specifically for `sync()`'s commit-diff path (Section 5), not `reconcile()`.
+- [ ] `diff` — untested. Same, matters for `sync()`.
+- [ ] `compareContent` — untested.
 
-- [ ] `GitService`: `getHeadCommit`, `listTrackedFiles`, `listWorkingTreeFiles`, `listIgnoredPaths`, `getLastSyncedCommit`/`setLastSyncedCommit`, `diff`, `compareContent`
-- [ ] `AstService`: `parseSource`, `walkAllNodes`, `filterByHighlight`, `extractName`, `hashNode`
-- [ ] `DocumentationService`: `writeDoc`, `findRecordForSelection`, `findStaleRecordForSelection`, `updateDriftedDoc`, `deleteRecord`, `editDocText`, `renameFile`, `handleDeletedFile`, `loadArchive`, `attachArchivedRecord`, `discardArchivedRecord`, `findDocumentedNodes`, `checkFile`, `generateMessages`
-- [ ] `SyncService`: `sync`, `handleFileEvent`, `handleRenameEvent`, `reconcile`, `checkFileOnDemand`, skip/minified-density logic
-- [ ] `LiveWatchService`: chokidar-based watcher, add/change/unlink handling, correlation window for renames
+## Section 4: `DocumentationService` — PARTIAL, the big one
 
-## Explicitly NOT ported (confirmed superseded by VSCode itself)
+- [x] `writeDoc` — directly tested (`testWriteDoc`), real record written and confirmed via the Documented Sections tree.
+- [x] `findDocumentedNodes` — directly tested, correct results shown in the tree and used for decorations.
+- [x] `deleteRecord` — directly tested, confirmed via screenshot that real on-disk storage was genuinely emptied.
+- [x] `loadStorage` — exercised directly as part of the Documented Sections collapsing logic.
+- [x] `checkFile`/`generateMessages` — exercised transitively via `reconcile()` (590 real, sampled-and-verified messages).
+- [ ] `findRecordForSelection` — **not implemented at all.** Needed for the right-click "Edit documentation"/"Delete documentation" menu (deciding whether a selection already matches a record).
+- [ ] `findStaleRecordForSelection` — **not implemented.** Needed for "Update documentation (code changed)".
+- [ ] `updateDriftedDoc` — **not implemented.** The actual drift-resolution flow.
+- [ ] `editDocText` — **not implemented.** The Documented Sections tree currently only has delete/copy wired, not edit.
+- [ ] `renameFile` — **not implemented/untested.** Matters when a documented file gets renamed.
+- [ ] `handleDeletedFile` — **not implemented/untested.** Matters when a documented file gets deleted.
+- [ ] `loadArchive`, `attachArchivedRecord`, `discardArchivedRecord` — **not implemented at all.** The entire Archive feature.
 
-- [ ] `WorkspaceService` + `recent-repos.ts` (auto-reopen last repo, recent-repos list): VSCode already remembers/reopens the last folder per window natively. Open question, not yet resolved: multi-root workspaces.
-- [ ] `determineRepoPath` (`electron/main.ts:420`): same reason.
-- [ ] 4 keyboard shortcuts (`electron/renderer.js:1738-1751`, Ctrl+Shift+I/T/O/W): each controlled something that no longer exists.
-- [ ] `localStorage` keys (`rapid-docs-theme`, `rapid-docs-panel-height`, `rapid-docs-panel-collapsed`, `rapid-docs-file-list-width`): custom layout state, no custom layout to persist.
-- [ ] `showContextMenu`/`hideContextMenu` custom menu system: replaced by native `editor/context` menu contributions.
-- [ ] Folder-tree collapse tracking, drag-resize handles: no custom tree/panel to manage.
-- [ ] `dialog.showOpenDialog`/`showErrorBox` (`electron/main.ts`): VSCode's own "Open Folder"; `vscode.window.showErrorMessage` if still needed anywhere.
+## Section 5: `SyncService` — PARTIAL
 
-## UI surfaces needing a real VSCode-side implementation
+- [x] `reconcile` — thoroughly tested (397, then 590 after the parser fix, sampled and confirmed legitimate).
+- [ ] `sync` — **not tested.** This is the actual commit-based diff path, the one that runs on every real git commit, not just the one-time catch-up scan.
+- [ ] `handleFileEvent` — **not tested.** The live-edit path.
+- [ ] `handleRenameEvent` — **not tested.**
+- [ ] `checkFileOnDemand` — **not tested.** Backs the "catch up a large/skipped file the moment it's opened" behavior.
+- [ ] Skip/minified-density logic — untested in this context (though covered by `src/`'s own Jest suite, still worth a real check here since the extension is a different caller).
 
-- [ ] **File tree, tabs, editor, current-file tracking** → VSCode's own Explorer/tabs/editor; `vscode.window.activeTextEditor` + `onDidChangeActiveTextEditor`
-- [ ] **Selection tracking** → `activeTextEditor.selection`
-- [ ] **Right-click menu** (Edit documentation / Delete documentation / Document selection / Update documentation (code changed) / Copy) → `contributes.menus["editor/context"]`, one command per action, reusing `findRecordForSelection`/`findStaleRecordForSelection`/`beginDriftUpdate` logic
-- [ ] **Problems panel** (`checkFile`/`generateMessages` output) → `vscode.languages.createDiagnosticCollection`
-- [ ] **Inline highlighting** (documented/warning/undocumented regions) → `vscode.window.createTextEditorDecorationType`
-- [ ] **Activity log** (every `addActivityEntry` call site, `electron/renderer.js`) → `vscode.window.showInformationMessage`/`showWarningMessage`/`showErrorMessage`, VSCode's own Notifications history replaces the custom tab
-- [ ] **Documented sections** (`findDocumentedNodes`, click-to-reveal, edit/delete/copy per row) → sidebar `TreeView`, `view/item/context` menu contributions, `revealRange`/`selection` on click
-- [ ] **Archive** (`loadArchive`, `attachArchivedRecord`, `discardArchivedRecord`) → sidebar `TreeView`
-- [ ] **Compose/write-doc UI** (`writeDoc`, `updateDriftedDoc`, `editDocText`, the multi-line text the whole project exists for) → the one Webview, styled entirely with VSCode's own `--vscode-*` CSS variables, no separate design system
-- [ ] **Keyboard shortcuts, if any new ones are wanted** → `contributes.keybindings`, shows up in VSCode's native Keyboard Shortcuts UI automatically
+## Section 6: `LiveWatchService` — PARTIAL
 
-## Main-process lifecycle (`electron/main.ts`)
+- [x] `start()` — tested, watcher genuinely starts.
+- [x] One real "messages" event — tested (a real file created on disk triggered a correct, accurate message within 1 second).
+- [x] `stop()` — tested as part of the Section 1 lifecycle fix (called from `deactivate()`, confirmed to complete without throwing).
+- [ ] Rename correlation window (add+unlink within the window = a rename, not a separate delete+add) — untested.
+- [ ] Multiple file changes in quick succession — untested.
+- [ ] Unlink-only (a genuine delete, no matching add) — untested.
 
-- [ ] `app.whenReady()` + `createWindow()` + `bootstrapEngine()` → extension `activate(context)`
-- [ ] `app.on("window-all-closed")` → extension `deactivate()`, if any cleanup is genuinely needed (stopping the watcher)
+## Section 7: UI layer — NOT STARTED (blocked on Sections 2-6 closing first)
+
+- [x] **Diagnostics (Problems + old Dashboard)** — `vscode.languages.createDiagnosticCollection`, populated from `reconcile()`. Confirmed VSCode's native "active file only" filter toggle covers what used to be two separate Electron panels (Problems was per-file, Dashboard was all-files) with the exact same one collection, zero extra code. Click-to-navigate on a diagnostic entry is native VSCode behavior, not yet explicitly re-confirmed by us clicking one on purpose (low risk, standard behavior, but not yet ticked with our own evidence). Still only wired from `reconcile()`, not yet re-wired to also update live from `sync()`/`handleFileEvent` once Section 5 closes.
+- [x] **Decorations (documented-region highlighting)** — real `TextEditorDecorationType`, themed via `diffEditor.insertedTextBackground`, tested end-to-end. Open design question, not yet decided: does a warning/info decoration (matching Electron's severity-tinted click-to-highlight) need to exist too, or does the native squiggle + native click-to-navigate already cover it? Leaning toward "already covered", not yet confirmed deliberately.
+- [~] **Documented Sections `TreeView`** — list, click-to-reveal, copy, delete all done. Edit is NOT wired (blocked on Section 4's `editDocText`).
+- [ ] **Archive `TreeView`** — not started, blocked on Section 4.
+- [ ] **Right-click editor context menu** (Edit documentation / Delete documentation / Document selection / Update documentation (code changed) / Copy) — not started at all. Every test so far has gone through the Command Palette, not the real interaction path. Blocked on Section 4's `findRecordForSelection`/`findStaleRecordForSelection`.
+- [ ] **Compose Webview** — not started. `testWriteDoc` writes a hardcoded placeholder string; the real "type your documentation" UI, the actual reason this whole project exists, doesn't exist yet. Blocked on Section 4's `updateDriftedDoc`/`editDocText`.
+- [ ] **Activity** — no separate section needed; it's VSCode's native Notifications (`showInformationMessage`/`showWarningMessage`/`showErrorMessage`), used inline wherever a flow needs it. Not yet systematically checked against every real scenario the Electron Activity log covered (hints, successes, errors) — to be verified as each flow above gets built, not as its own phase.
+- [ ] Keyboard shortcuts, if any new ones are wanted — not started, low priority.
+
+## Section 8: Final confirmation pass on what's deliberately NOT ported — NOT STARTED
+
+- [ ] `WorkspaceService` + `recent-repos.ts` — reasoned through (VSCode natively remembers/reopens the last folder), never re-confirmed against a real multi-root workspace scenario, the one open question flagged early on and never actually resolved.
+- [ ] `determineRepoPath` (`electron/main.ts:420`) — same reasoning as above, same open question.
+- [ ] 4 keyboard shortcuts (`electron/renderer.js:1738-1751`) — reasoned through, not re-confirmed.
+- [ ] `localStorage` keys (theme/panel-height/panel-collapsed/file-list-width) — reasoned through, not re-confirmed.
+- [ ] Custom `showContextMenu`/`hideContextMenu` — superseded by native menu contributions once Section 7's right-click menu is actually built; premature to close this out before that exists.
+- [ ] Folder-tree collapse tracking, drag-resize handles — reasoned through, not re-confirmed.
+- [ ] `dialog.showOpenDialog`/`showErrorBox` — reasoned through, not re-confirmed.
 
 ## Storage format (unchanged either way)
 
-- [ ] `.rapid-docs/<relativePath>.json` per-file records, archive JSON: no change needed, plain `fs` reads/writes already work identically inside the Extension Host
+- [x] `.rapid-docs/<relativePath>.json` per-file records — confirmed working identically inside the Extension Host through incidental use across every section above (write/read/delete all exercised for real).
+- [ ] Archive JSON file — untested (blocked on Section 4).
