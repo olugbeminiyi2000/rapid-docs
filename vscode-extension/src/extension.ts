@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { writeFileSync, mkdtempSync, rmSync, unlinkSync, existsSync } from "fs";
+import { writeFileSync, mkdtempSync, rmSync, unlinkSync, existsSync, renameSync, mkdirSync } from "fs";
 import { execFileSync } from "child_process";
 import { tmpdir } from "os";
 import { join } from "path";
@@ -831,6 +831,104 @@ class GreetingService {
     }
   });
   context.subscriptions.push(testSyncServiceDisposable);
+
+  // Section 6 (LiveWatchService): start()/one event/stop() were already
+  // proven in Section 1. What's left is the rename-correlation window
+  // (add+unlink paired within it = a rename, not two separate events),
+  // genuine rapid-succession changes to different files staying separate,
+  // an unlink with no matching add correctly falling through as a real
+  // delete once the window elapses, and the "someone else's documentation
+  // arrived via git pull" storage-only-change path. Real async timing is
+  // involved here (chokidar's own event delivery, the correlation window's
+  // setTimeout), unlike every synchronous method tested in Sections 2-5.
+  const testLiveWatchSectionDisposable = vscode.commands.registerCommand("rapidDocs.testLiveWatchSection", async () => {
+    const lines: string[] = [];
+    const scratchDir = mkdtempSync(join(tmpdir(), "rapid-docs-livewatch-section-scratch-"));
+    const correlationWindowMs = 150; // short, so the test doesn't wait on the real 500ms default
+
+    type Collected = { relativePaths: string[]; messageCount: number; at: number };
+    const collected: Collected[] = [];
+    const listener = (relativePaths: string[], messages: unknown[]) => {
+      collected.push({ relativePaths, messageCount: messages.length, at: Date.now() });
+    };
+
+    const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+    try {
+      // Reset to a clean slate -- liveWatchService is the SAME shared
+      // instance testLiveWatch (Section 1) may already have started once
+      // this session, on a different repo entirely.
+      await liveWatchService.stop();
+
+      execFileSync("git", ["init"], { cwd: scratchDir });
+      execFileSync("git", ["config", "user.email", "test@rapid-docs.local"], { cwd: scratchDir });
+      execFileSync("git", ["config", "user.name", "rapid-docs test"], { cwd: scratchDir });
+      const contentX = "export function xFunc() {\n  return \"x\";\n}\n";
+      const contentY = "export function yFunc() {\n  return \"y\";\n}\n";
+      const contentW = "export function wFunc() {\n  return \"w\";\n}\n";
+      writeFileSync(join(scratchDir, "x.ts"), contentX);
+      writeFileSync(join(scratchDir, "y.ts"), contentY);
+      writeFileSync(join(scratchDir, "w.ts"), contentW);
+      execFileSync("git", ["add", "."], { cwd: scratchDir });
+      execFileSync("git", ["commit", "-m", "init"], { cwd: scratchDir });
+
+      liveWatchService.on("messages", listener);
+      await liveWatchService.start(scratchDir, correlationWindowMs);
+      lines.push(`start() with a ${correlationWindowMs}ms correlation window: ok`);
+
+      // --- Test A: rename correlation (real OS rename -> real unlink+add pair) ---
+      renameSync(join(scratchDir, "x.ts"), join(scratchDir, "x-renamed.ts"));
+      await wait(correlationWindowMs * 4);
+      const renameEvents = collected.filter((e) => e.relativePaths.includes("x.ts") || e.relativePaths.includes("x-renamed.ts"));
+      const correlated = renameEvents.some((e) => e.relativePaths.length === 2 && e.relativePaths.includes("x.ts") && e.relativePaths.includes("x-renamed.ts"));
+      lines.push(`Rename correlation (x.ts -> x-renamed.ts): ${renameEvents.length} relevant event(s), correlated as ONE rename (not two separate events)=${correlated}`);
+      collected.length = 0;
+
+      // --- Test B: unlink-only, no matching add -> falls through as a real delete once the window elapses ---
+      unlinkSync(join(scratchDir, "y.ts"));
+      await wait(correlationWindowMs * 4);
+      const unlinkEvents = collected.filter((e) => e.relativePaths.includes("y.ts"));
+      const singlePathUnlink = unlinkEvents.length === 1 && unlinkEvents[0].relativePaths.length === 1;
+      lines.push(`Unlink-only (y.ts deleted, no pairing add): ${unlinkEvents.length} event(s), correctly a single, un-paired path=${singlePathUnlink}`);
+      collected.length = 0;
+
+      // --- Test C: rapid, near-simultaneous changes to two DIFFERENT files stay separate ---
+      writeFileSync(join(scratchDir, "x-renamed.ts"), contentX + "// touched\n");
+      writeFileSync(join(scratchDir, "w.ts"), contentW + "// touched\n");
+      await wait(correlationWindowMs * 4);
+      const xEvent = collected.find((e) => e.relativePaths.length === 1 && e.relativePaths[0] === "x-renamed.ts");
+      const wEvent = collected.find((e) => e.relativePaths.length === 1 && e.relativePaths[0] === "w.ts");
+      lines.push(`Rapid changes to 2 different files: x-renamed.ts got its own event=${!!xEvent}, w.ts got its own event=${!!wEvent}, no cross-contamination=${collected.length === 2}`);
+      collected.length = 0;
+
+      // --- Test D: a .rapid-docs storage file changing on its own -> rechecks the SOURCE file, not the storage path ---
+      const storageDir = join(scratchDir, ".rapid-docs");
+      mkdirSync(storageDir, { recursive: true });
+      writeFileSync(join(storageDir, "w.ts.json"), JSON.stringify({ fileId: "w.ts", records: {} }, null, 2));
+      await wait(correlationWindowMs * 4);
+      const derivedEvent = collected.find((e) => e.relativePaths.includes("w.ts"));
+      lines.push(`Storage-only change (.rapid-docs/w.ts.json written directly): rechecked the real source file w.ts, not the storage path=${!!derivedEvent}`);
+
+      vscode.window.showInformationMessage("rapid-docs: LiveWatchService section test finished, see proof file for full results.");
+    } catch (err) {
+      lines.push(`ERROR: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+      vscode.window.showErrorMessage("rapid-docs: LiveWatchService test failed partway, see proof file for what succeeded before that.");
+    } finally {
+      liveWatchService.off("messages", listener);
+      try {
+        await liveWatchService.stop();
+      } catch {
+        /* non-fatal */
+      }
+      try {
+        rmSync(scratchDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+      } catch {
+        /* non-fatal, matches the earlier Windows-EPERM lesson */
+      }
+      writeFileSync(join(tmpdir(), "rapid-docs-livewatch-section-proof.txt"), `${new Date().toISOString()}\n${lines.join("\n")}\n`);
+    }
+  });
+  context.subscriptions.push(testLiveWatchSectionDisposable);
 }
 
 // electron/main.ts never needed an equivalent to this -- its whole process

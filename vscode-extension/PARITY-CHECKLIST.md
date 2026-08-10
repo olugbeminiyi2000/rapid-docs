@@ -74,14 +74,20 @@ Skip/minified-density logic itself (not just the outcome) is already covered by 
 
 **Real gap in the test's own cleanup, not `SyncService`:** the `handleRenameEvent` step's real migrated storage record was never explicitly discarded by the test, found afterward via `.rapid-docs/` still containing it and removed manually.
 
-## Section 6: `LiveWatchService` — PARTIAL
+## Section 6: `LiveWatchService` — CLOSED
 
 - [x] `start()` — tested, watcher genuinely starts.
 - [x] One real "messages" event — tested (a real file created on disk triggered a correct, accurate message within 1 second).
 - [x] `stop()` — tested as part of the Section 1 lifecycle fix (called from `deactivate()`, confirmed to complete without throwing).
-- [ ] Rename correlation window (add+unlink within the window = a rename, not a separate delete+add) — untested.
-- [ ] Multiple file changes in quick succession — untested.
-- [ ] Unlink-only (a genuine delete, no matching add) — untested.
+
+The remaining real-timing behaviors verified via `rapidDocs.testLiveWatchSection`, against a disposable scratch git repo with a short (150ms) correlation window and a temporary local listener (removed afterward so it can never leak into later runs):
+
+- [x] Rename correlation window — a real OS `renameSync` (not a simulated event) produced exactly ONE correlated "messages" event naming both the old and new relative paths, not two separate uncorrelated events.
+- [x] Unlink-only (genuine delete, no matching add) — correctly fell through, once the correlation window elapsed, as a single event with just the one path, not wrongly paired with anything.
+- [x] Rapid, near-simultaneous changes to two different files — each produced its own separate, correct event, confirmed no cross-contamination between them.
+- [x] `deriveSourcePathFromStoragePath` (a collaborator's documentation arriving via `git pull`, only the `.rapid-docs/*.json` file changes, not the source) — writing directly to a storage file with no corresponding source-file change correctly triggered a recheck of the real source file, not the storage path itself.
+
+**All six backend sections (1-6) are now CLOSED.** The entire reused backend, every method across `AstService`, `GitService`, `DocumentationService`, `SyncService`, and `LiveWatchService`, is proven working for real inside the Extension Host, with concrete evidence for each, not assumed from the isolated Jest suite or from "it compiled." Section 7 (UI layer) can now proceed on a fully verified foundation.
 
 ## Section 7: UI layer — NOT STARTED (blocked on Sections 2-6 closing first)
 

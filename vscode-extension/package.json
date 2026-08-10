@@ -69,6 +69,10 @@
       {
         "command": "rapidDocs.testSyncService",
         "title": "rapid-docs: Test SyncService (Section 5)"
+      },
+      {
+        "command": "rapidDocs.testLiveWatchSection",
+        "title": "rapid-docs: Test LiveWatchService (Section 6)"
       }
     ],
     "views": {
