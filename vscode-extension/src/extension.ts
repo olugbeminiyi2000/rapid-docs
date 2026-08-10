@@ -791,6 +791,38 @@ class GreetingService {
         `sync() real diff (rename a->a-renamed + add b): ${reportDiff.messages.length} message(s), old storage gone=${oldStorageGone}, new storage exists=${newStorageExists}, record survived migration=${!!migratedStorage.records[scratchRecordId]}`
       );
 
+      // --- sync() branch 4b: a real commit that DELETES a tracked,
+      // documented file -- neither GitService.diff()'s "D" status parsing
+      // nor sync()'s own diffResult.deleted loop (calling handleDeletedFile)
+      // had ever been exercised before this; handleFileEvent's delete
+      // branch tested above is a completely different, LIVE-filesystem
+      // code path, not this commit-based one. ---
+      execFileSync("git", ["rm", "a-renamed.ts"], { cwd: scratchDir });
+      execFileSync("git", ["commit", "-m", "delete a-renamed"], { cwd: scratchDir });
+      const reportDeleteCommit = syncService.sync(scratchDir);
+      const archiveAfterDeleteCommit = documentationService.loadArchive(scratchDir);
+      const migratedFileArchived = archiveAfterDeleteCommit.some((e: { originalFileId: string }) => e.originalFileId === "a-renamed.ts");
+      lines.push(
+        `sync() real diff (commit deletes a-renamed.ts): ${reportDeleteCommit.messages.length} message(s), archived via diffResult.deleted loop=${migratedFileArchived}`
+      );
+
+      // --- reconcile()'s OWN "detect a deleted-but-still-documented file"
+      // loop (listDocumentedFileIds + existsSync), specifically the gap
+      // reconcile() exists to catch per its own doc comment: something
+      // deleted while the app was closed, never committed, never seen live
+      // by handleFileEvent either. The ONLY prior reconcile() test (Section
+      // 1) ran against a repo with zero prior documentation, so this exact
+      // loop body had never actually executed with real data before now. ---
+      writeFileSync(join(scratchDir, "r.ts"), "export function rFunc() {\n  return \"r\";\n}\n");
+      documentationService.writeDoc(scratchDir, "r.ts", 0, "export function rFunc() {\n  return \"r\";\n}\n".length, "Documents rFunc.");
+      unlinkSync(join(scratchDir, "r.ts")); // real filesystem delete, no git, no handleFileEvent involved
+      const reconcileReport = syncService.reconcile(scratchDir);
+      const archiveAfterReconcile = documentationService.loadArchive(scratchDir);
+      const rFileArchived = archiveAfterReconcile.some((e: { originalFileId: string }) => e.originalFileId === "r.ts");
+      lines.push(
+        `reconcile() detecting a deleted-but-still-documented file (r.ts, never committed, never seen live): ${reconcileReport.messages.length} message(s), archived=${rFileArchived}`
+      );
+
       // --- handleFileEvent: file exists (real check) ---
       writeFileSync(absSmall, "export function gamma() {\n  return 3;\n}\n");
       const eventExists = syncService.handleFileEvent(repoPath, relSmall);

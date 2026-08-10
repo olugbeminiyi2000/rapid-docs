@@ -65,7 +65,7 @@ The remaining 9 methods verified via `rapidDocs.testDocumentationService`, one r
 
 ## Section 5: `SyncService` — CLOSED
 
-- [x] `reconcile` — thoroughly tested (397, then 590 after the parser fix, sampled and confirmed legitimate).
+- [x] `reconcile` — thoroughly tested (397, then 590 after the parser fix, sampled and confirmed legitimate), PLUS its own "deleted-but-still-documented file" loop specifically re-tested below (see third re-audit).
 
 `sync()`'s four real branches, and the other three methods, all verified via `rapidDocs.testSyncService` against a disposable scratch git repo (real commits, a real `git mv` rename) plus real scratch files in the workspace:
 
@@ -77,6 +77,12 @@ The remaining 9 methods verified via `rapidDocs.testDocumentationService`, one r
 Skip/minified-density logic itself (not just the outcome) is already covered by `src/`'s own Jest suite; this section confirms the extension's own call path reaches it correctly, not a duplicate of that lower-level coverage.
 
 **Real gap in the test's own cleanup, not `SyncService`:** the `handleRenameEvent` step's real migrated storage record was never explicitly discarded by the test, found afterward via `.rapid-docs/` still containing it and removed manually.
+
+**Third re-audit pass (2026-08-10) found two more real gaps, both about the same untested shape (a committed deletion), since re-checked and closed:**
+- [x] `GitService.diff()`'s `"D"` (deleted) status-letter parsing, and `sync()`'s own `diffResult.deleted` loop (calling `handleDeletedFile` per deleted path) — neither had ever been exercised by a real commit. The two commits made earlier only ever added/renamed/modified files, never deleted one. This is a genuinely different code path from `handleFileEvent`'s delete branch (already tested), which only ever sees a *live*, uncommitted filesystem delete, not a committed one. Fixed by adding a third commit (`git rm a-renamed.ts`) to the scratch repo and re-running `sync()`: correctly detected the deletion, correctly archived the previously-migrated documentation record.
+- [x] `reconcile()`'s own "detect a deleted-but-still-documented file" loop (`listDocumentedFileIds` + `existsSync`), the one specifically meant to catch a file deleted while the app was closed, never committed, never seen by any live watcher either. The only prior `reconcile()` test (Section 1) ran against a repo with zero prior documentation, so this exact loop body had never actually executed with real data. Fixed: documented a new file, deleted it directly from disk (no git, no `handleFileEvent`), called `reconcile()`, confirmed it was correctly detected and archived.
+
+This third pass is a genuine, useful pattern for future sections too: two passes had already closed Sections 4-6 and then found real gaps on re-check; this third pass found gaps specifically shaped like "a deletion, but through the ONE remaining path (a real commit) that hadn't been tried yet." When a method has multiple ways to reach the same outcome (live vs. committed, for instance), each real path needs its own check, not just one representative case.
 
 ## Section 6: `LiveWatchService` — CLOSED
 
