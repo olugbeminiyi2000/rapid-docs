@@ -12,13 +12,16 @@
 - [x] `NestFactory.createApplicationContext(AppModule)` succeeds inside the Extension Host, via the same dynamic-`import()` pattern `electron/main.ts`'s `bootstrapEngine()` uses (`import("../../dist/app.module.js")`, identical relative path depth).
 - [x] `deactivate()` — **found completely empty, a real, previously-uncaught resource leak.** `LiveWatchService`'s watcher was never stopped and the Nest application context was never closed on shutdown; `electron/main.ts` never needed this (its whole OS process just exits), but an extension can deactivate without VSCode exiting at all. Fixed by hoisting `liveWatchService`/`appContext` to module scope so `deactivate()` can reach them, calling `.stop()` and `.close()`. Verified for real, not just reviewed: started the watcher via `testLiveWatch`, closed the Extension Development Host window, confirmed a proof file was written that only gets reached after BOTH awaited cleanup calls succeed without throwing.
 
-## Section 2: `AstService` — NOT STARTED (method-by-method)
+## Section 2: `AstService` — CLOSED
 
-- [ ] `parseSource` — only exercised transitively (via `reconcile()`/decorations/Documented Sections), never directly asserted against known input/output.
-- [ ] `walkAllNodes` — same, transitive only.
-- [ ] `filterByHighlight` — untested, transitively or otherwise.
-- [ ] `extractName` — untested, transitively or otherwise.
-- [ ] `hashNode` — only exercised transitively.
+All five real methods chained together against one self-contained sample (a real `@Injectable()`-decorated class with a `greet` method) via `rapidDocs.testAstService`, each asserted against a known-correct expected result, not just "didn't throw":
+
+- [x] `ping()` — already exercised with real evidence during Section 1's DI-graph proof.
+- [x] `parseSource` — `fatal=false`, real `ast` returned, 0 errors, on real decorator syntax. Re-confirms the `decorators-legacy` parser fix through this exact integration path, not just the isolated Jest suite.
+- [x] `walkAllNodes` — found 18 real nodes from the sample, a plausible, non-zero, non-garbage count.
+- [x] `extractName` — given the real `ClassMethod` node found by `walkAllNodes`, correctly returned `"greet"`, the actual real name, not a guess.
+- [x] `filterByHighlight` — narrowed to the method's own byte range, returned 12 nodes, verified every one of them is genuinely contained (`start >= highlightStart && end <= highlightEnd`), not just counted.
+- [x] `hashNode` — determinism confirmed (hashing the same real node twice produced the identical hash), distinctness confirmed (hashing a different real node produced a different hash).
 
 ## Section 3: `GitService` — PARTIAL
 

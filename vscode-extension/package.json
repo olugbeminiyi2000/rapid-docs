@@ -53,6 +53,10 @@
         "command": "rapidDocs.deleteDocumentedSection",
         "title": "rapid-docs: Delete Documentation",
         "icon": "$(trash)"
+      },
+      {
+        "command": "rapidDocs.testAstService",
+        "title": "rapid-docs: Test AstService (Section 2)"
       }
     ],
     "views": {
