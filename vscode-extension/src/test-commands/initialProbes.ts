@@ -121,6 +121,12 @@ export function registerInitialProbes(context: vscode.ExtensionContext, deps: In
       );
       vscode.window.showInformationMessage(`rapid-docs live-watch fired for: ${relativePaths.join(", ")}`);
     });
+    // stop() first: real activation now auto-starts the watcher (Section
+    // 7.1's live-diagnostics wiring), so this command running standalone
+    // would otherwise start a SECOND watcher without stopping the first --
+    // start() has no built-in guard against that, it silently overwrites
+    // its own internal handle and leaks the old one.
+    await deps.liveWatchService.stop();
     await deps.liveWatchService.start(repoPath);
     vscode.window.showInformationMessage(`rapid-docs: now live-watching ${repoPath}`);
     writeFileSync(join(tmpdir(), "rapid-docs-livewatch-started-proof.txt"), `started at ${new Date().toISOString()}\n${repoPath}\n`);

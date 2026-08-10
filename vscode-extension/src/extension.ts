@@ -3,7 +3,7 @@ import { writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { bootstrapBackend } from "./backend/bootstrap";
-import { createDiagnosticsController } from "./diagnostics/diagnosticsController";
+import { createDiagnosticsController, activateDiagnosticsLiveWiring } from "./diagnostics/diagnosticsController";
 import { registerDocumentedSections } from "./documented-sections/documentedSectionsProvider";
 import { registerAllTestCommands } from "./test-commands/registerAll";
 import { TestFoundationViewProvider } from "./webviews/testFoundation/testFoundationViewProvider";
@@ -44,6 +44,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const documentedSections = registerDocumentedSections(context, backend.documentationService, documentedDecorationType);
   await documentedSections.refresh();
+
+  // Section 7.1 re-confirmation: this previously only ever ran via manual
+  // test commands -- a real user opening the extension got no initial
+  // Problems-panel populate and no live updates until they happened to run
+  // one themselves. See diagnosticsController.ts for the real, matching-
+  // electron/main.ts catch-up-then-watch sequence.
+  await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, backend.liveWatchService);
 
   // Section 7.1: the new webview-infrastructure proof, separate from
   // everything above -- see PARITY-CHECKLIST.md Section 7.1.
