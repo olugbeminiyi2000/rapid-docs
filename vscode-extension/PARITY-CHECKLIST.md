@@ -119,14 +119,43 @@ All seven verified via updated `rapidDocs.testDocumentationService`, `rapidDocs.
 
 ## Section 7: UI layer — IN PROGRESS (Sections 2-6 closed and four-times re-audited, no longer blocking)
 
-- [x] **Diagnostics (Problems + old Dashboard)** — `vscode.languages.createDiagnosticCollection`, populated from `reconcile()`. Confirmed VSCode's native "active file only" filter toggle covers what used to be two separate Electron panels (Problems was per-file, Dashboard was all-files) with the exact same one collection, zero extra code. Click-to-navigate on a diagnostic entry is native VSCode behavior, not yet explicitly re-confirmed by us clicking one on purpose (low risk, standard behavior, but not yet ticked with our own evidence). Still only wired from `reconcile()`, not yet re-wired to also update live from `sync()`/`handleFileEvent` once Section 5 closes.
-- [x] **Decorations (documented-region highlighting)** — real `TextEditorDecorationType`, themed via `diffEditor.insertedTextBackground`, tested end-to-end. Open design question, not yet decided: does a warning/info decoration (matching Electron's severity-tinted click-to-highlight) need to exist too, or does the native squiggle + native click-to-navigate already cover it? Leaning toward "already covered", not yet confirmed deliberately.
-- [~] **Documented Sections `TreeView`** — list, click-to-reveal, copy, delete all done. Edit is NOT wired (blocked on Section 4's `editDocText`).
-- [ ] **Archive `TreeView`** — not started, blocked on Section 4.
-- [ ] **Right-click editor context menu** (Edit documentation / Delete documentation / Document selection / Update documentation (code changed) / Copy) — not started at all. Every test so far has gone through the Command Palette, not the real interaction path. Blocked on Section 4's `findRecordForSelection`/`findStaleRecordForSelection`.
-- [ ] **Compose Webview** — not started. `testWriteDoc` writes a hardcoded placeholder string; the real "type your documentation" UI, the actual reason this whole project exists, doesn't exist yet. Blocked on Section 4's `updateDriftedDoc`/`editDocText`.
-- [ ] **Activity** — no separate section needed; it's VSCode's native Notifications (`showInformationMessage`/`showWarningMessage`/`showErrorMessage`), used inline wherever a flow needs it. Not yet systematically checked against every real scenario the Electron Activity log covered (hints, successes, errors) — to be verified as each flow above gets built, not as its own phase.
-- [ ] Keyboard shortcuts, if any new ones are wanted — not started, low priority.
+**Method for this section, agreed 2026-08-10:** a full, line-by-line audit of the real Electron UI (`electron/renderer.js`, 1858 lines, plus `index.html`/`styles.css`) was done before writing any Section 7 code, specifically to avoid the "one UI piece at a time, missed a real gap" mistake from Sections 1-6's first pass. Every real feature found is listed below in dependency order (7.1 → 7.9), same discipline as Sections 1-6: a sub-item is only checked once verified with real evidence, never "looks right." **Everything is Webview, not TreeView** — a decision made explicitly 2026-08-10 because TreeView's native list styling isn't flexible enough to build on later; this REOPENS Documented Sections (7.2 below), which had been built as a TreeView and briefly marked done. **Full retest, no exceptions** — Diagnostics and Decorations (7.1a/7.1b below) already have real evidence from earlier, but get re-confirmed here too, same as everything else, per explicit instruction: treat this like starting from scratch.
+
+### 7.1: Foundation — NOT STARTED
+- [ ] **Webview infrastructure** — a real `WebviewView` (not `WebviewPanel`) registers, renders themed HTML/CSS using VSCode's own CSS variables (`var(--vscode-editor-background)` etc., so it auto-adapts to the user's real theme, light/dark/high-contrast, the same technique Claude Code's own panel uses), and two-way message passing (`webview.postMessage` / `onDidReceiveMessage`) works in both directions. The leaf dependency every other Webview below builds on.
+- [ ] **Diagnostics (Problems + old Dashboard), re-confirmed** — `createDiagnosticCollection` populated from `reconcile()`, native "active file only" toggle covers what used to be two panels. Re-click-to-navigate on a real diagnostic entry, confirm with our own evidence (previously reasoned through, never actually clicked on purpose). Still only wired from `reconcile()`, not yet from `sync()`/`handleFileEvent`'s live paths — real gap to close here, not deferred further now that Section 5 is closed.
+- [ ] **Decorations (documented-region highlighting), re-confirmed** — real `TextEditorDecorationType` themed via `diffEditor.insertedTextBackground`. Resolve the open question: does a severity-tinted (warning/info) decoration need to exist for drift, separate from the "documented" one, or does the native squiggle + native click-to-navigate already cover that? Decide, don't defer.
+
+### 7.2: Documented-region interactions — NOT STARTED (rebuild, previously TreeView)
+- [ ] **Documented Sections Webview** — rows (line range + text), click-to-reveal+select, inline Edit (swap row for a text input), Delete. Rebuilds `rapid-docs/src/documented-sections`-equivalent UI as a Webview instead of the `TreeView` built earlier; all 3 already-proven Section 4 backend calls (`findDocumentedNodes`, `editDocText`, `deleteRecord`) get rewired, not re-verified at the backend level.
+- [ ] **Click inside a highlighted documented region in the real editor → select + reveal + toggle** (`renderer.js:220-240`) — genuinely missing feature found during the audit, not previously tracked at all. Needs `vscode.window.onDidChangeTextEditorSelection`, checking whether a collapsed-cursor click landed inside a currently-decorated range.
+- [ ] **Single-highlight-toggle** — only one documented region (or drift problem) highlighted at a time; clicking its row/click-point again turns it off; clicking a different one replaces it. Current `testDecorations` just paints every region unconditionally — real behavioral gap, not yet designed for the extension.
+
+### 7.3: Compose flow — NOT STARTED
+- [ ] **Compose Webview** (textarea + submit button) — real validation (file open? selection non-empty? text non-empty?), button label swap ("Document Selection" ↔ "Update Documentation"), friendly-error mapping (e.g. "already documented" → "use Edit instead"). `testWriteDoc` currently only writes a hardcoded placeholder string; this is the actual reason the whole project exists and doesn't exist yet.
+- [ ] **`pendingDriftUpdate`-equivalent state machine** — set when "Update documentation (code changed)" is invoked, consumed by the next compose submission (routes to `updateDriftedDoc` instead of `writeDoc`), cleared by Edit/Delete from either the context menu or the Documented Sections list.
+
+### 7.4: Editor right-click context menu — NOT STARTED
+- [ ] **Native `editor/context` menu contribution** (Edit documentation / Delete documentation / Update documentation (code changed) / Document selection / Copy) — uses VSCode's own native context menu (confirmed via the Claude Code screenshot precedent: "Add File to Chat"/"Explain"/"Review" are the same mechanism), not a custom-built one. Real design work: a context key (`rapidDocs.selectionState` or similar), set via `setContext` on every selection change, driven by real `findRecordForSelection`/`findStaleRecordForSelection` calls (backend-authoritative, not a client-side position guess — this exact bug existed in Electron and was fixed there for the same reason), with `when` clauses per menu item.
+- [ ] Tab-strip right-click (Close/Close Others/Close to the Right/Close All) — fully native VSCode behavior already; confirm with one real right-click, no code to write.
+
+### 7.5: Archive Webview — NOT STARTED
+- [ ] **Archive Webview** — list of archived `docText` entries with origin path, Discard button, click-to-select-as-pending, a separate "Attach here" bar/button that attaches the selected archive entry onto the current real editor selection. Depends on 7.3's real selection-reading logic.
+
+### 7.6: Problems/Activity panel redesign — NOT STARTED (needs a real design decision first)
+- [ ] **Decide**: does native `DiagnosticCollection` alone cover Problems, or does checkbox-select + Clear Selected/Clear All + an inline Delete button on fully-stale (error-severity) rows need a supplementary Webview? Native Diagnostics has none of those three.
+- [ ] **Activity Webview** — a persistent, clearable, checkbox-select-able log of this session's document/edit/error attempts. Native Notifications only give ephemeral toasts, not a list — real gap, not yet built.
+- [ ] Dashboard tab — already superseded (native Diagnostics' all-files toggle), no work needed, just note it as consciously dropped.
+
+### 7.7: Repo/workspace re-confirmation — NOT STARTED (mostly verification, not building)
+- [ ] Empty state / Recent Workspaces re-confirmed against a **real multi-root workspace** — flagged early, never actually resolved, still open.
+- [ ] **Heavy-repo freeze risk** — Electron's `repoOpenInProgress` guard + spinner existed because a heavy synchronous git scan could make the whole main process "Not Responding." Our NestJS backend calls run synchronously inside the Extension Host too — never actually tested whether a big real repo can freeze VSCode's UI the same way, and if so, whether a `vscode.window.withProgress` (or similar) guard is needed anywhere.
+
+### 7.8: Top-bar menu / keyboard shortcuts — NOT STARTED (closing out prior "reasoned through" claims)
+- [ ] Theme toggle, Switch repository, Close repository, Open panel + their 4 keyboard shortcuts (Ctrl+Shift+T/O/W/I) — reasoned as superseded by native theming + native Open/Close Folder, but never reconfirmed with real evidence (same open item Section 8 has flagged since the start).
+
+### 7.9: Full regression pass — NOT STARTED
+- [ ] Once 7.1-7.8 are each individually closed, one final pass re-testing ALL of Section 7 together for real, end to end, exactly like the four backend re-audits did for Sections 1-6, before Section 7 itself is marked CLOSED.
 
 ## Section 8: Final confirmation pass on what's deliberately NOT ported — NOT STARTED
 
