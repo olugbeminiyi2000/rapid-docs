@@ -31,6 +31,14 @@
       {
         "command": "rapidDocs.testDiagnostics",
         "title": "rapid-docs: Test Diagnostics (Problems panel)"
+      },
+      {
+        "command": "rapidDocs.testWriteDoc",
+        "title": "rapid-docs: Test Write Doc (writes a real record for the current selection)"
+      },
+      {
+        "command": "rapidDocs.testDecorations",
+        "title": "rapid-docs: Test Decorations (highlight documented regions)"
       }
     ]
   },

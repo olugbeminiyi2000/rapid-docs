@@ -69,6 +69,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const diagnosticCollection = vscode.languages.createDiagnosticCollection("rapid-docs");
   context.subscriptions.push(diagnosticCollection);
 
+  // No native VSCode concept covers this: Diagnostics is only for
+  // problems, there's nothing built in for "this code is fine, and
+  // here's proof it's documented." insertedTextBackground is a real,
+  // already-themed VSCode color (used for diff-added lines), reused here
+  // rather than picking an arbitrary color, so it adapts to whatever
+  // theme (light/dark/high-contrast) the user actually has.
+  const documentedDecorationType = vscode.window.createTextEditorDecorationType({
+    backgroundColor: new vscode.ThemeColor("diffEditor.insertedTextBackground"),
+  });
+  context.subscriptions.push(documentedDecorationType);
+
   const helloDisposable = vscode.commands.registerCommand("rapidDocs.helloWorld", () => {
     const editor = vscode.window.activeTextEditor;
     const fileInfo = editor
@@ -215,6 +226,68 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     writeFileSync(join(tmpdir(), "rapid-docs-livewatch-started-proof.txt"), `started at ${new Date().toISOString()}\n${repoPath}\n`);
   });
   context.subscriptions.push(testLiveWatchDisposable);
+
+  const testWriteDocDisposable = vscode.commands.registerCommand("rapidDocs.testWriteDoc", () => {
+    const editor = vscode.window.activeTextEditor;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!editor || !folder) {
+      vscode.window.showWarningMessage("rapid-docs: open a file first.");
+      return;
+    }
+    if (editor.selection.isEmpty) {
+      vscode.window.showWarningMessage("rapid-docs: select some code first.");
+      return;
+    }
+
+    const repoPath = folder.uri.fsPath;
+    const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
+    const start = editor.document.offsetAt(editor.selection.start);
+    const end = editor.document.offsetAt(editor.selection.end);
+
+    const { recordId } = documentationService.writeDoc(
+      repoPath,
+      relativePath,
+      start,
+      end,
+      "Test documentation written from the VSCode extension probe."
+    );
+
+    vscode.window.showInformationMessage(`rapid-docs: wrote a real doc record (${recordId}) for ${relativePath}.`);
+    writeFileSync(join(tmpdir(), "rapid-docs-writedoc-proof.txt"), `${new Date().toISOString()}\n${relativePath}\n${recordId}\n`);
+  });
+  context.subscriptions.push(testWriteDocDisposable);
+
+  const testDecorationsDisposable = vscode.commands.registerCommand("rapidDocs.testDecorations", () => {
+    const editor = vscode.window.activeTextEditor;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!editor || !folder) {
+      vscode.window.showWarningMessage("rapid-docs: open a file first.");
+      return;
+    }
+
+    const repoPath = folder.uri.fsPath;
+    const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
+
+    let documentedNodes: { recordId: string; type: string; start: number; end: number }[];
+    try {
+      documentedNodes = documentationService.findDocumentedNodes(repoPath, relativePath);
+    } catch (err) {
+      vscode.window.showWarningMessage(`rapid-docs: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    const ranges = documentedNodes.map(
+      (node) => new vscode.Range(editor.document.positionAt(node.start), editor.document.positionAt(node.end))
+    );
+    editor.setDecorations(documentedDecorationType, ranges);
+
+    vscode.window.showInformationMessage(`rapid-docs: highlighted ${ranges.length} documented region(s) in ${relativePath}.`);
+    writeFileSync(
+      join(tmpdir(), "rapid-docs-decorations-proof.txt"),
+      `${new Date().toISOString()}\n${relativePath}\n${ranges.length} documented region(s)\n`
+    );
+  });
+  context.subscriptions.push(testDecorationsDisposable);
 }
 
 export function deactivate(): void {}
