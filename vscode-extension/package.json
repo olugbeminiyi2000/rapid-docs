@@ -1,0 +1,45 @@
+{
+  "name": "rapid-docs-vscode",
+  "displayName": "rapid-docs",
+  "description": "AST-based, git-native documentation drift detection, inside the editor.",
+  "version": "0.0.1",
+  "private": true,
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "rapidDocs.helloWorld",
+        "title": "rapid-docs: Hello World"
+      },
+      {
+        "command": "rapidDocs.testBackend",
+        "title": "rapid-docs: Test Backend (GitService)"
+      },
+      {
+        "command": "rapidDocs.testReconcile",
+        "title": "rapid-docs: Test Reconcile (Sync/Ast/Documentation)"
+      },
+      {
+        "command": "rapidDocs.testLiveWatch",
+        "title": "rapid-docs: Test Live Watch (LiveWatchService)"
+      },
+      {
+        "command": "rapidDocs.testDiagnostics",
+        "title": "rapid-docs: Test Diagnostics (Problems panel)"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.4.0"
+  }
+}
