@@ -609,12 +609,25 @@ class GreetingService {
     const absB = join(repoPath, relB);
     const absC = join(repoPath, relC);
 
+    const relBroken = "vscode-extension/src/__docservice_test_broken__.ts";
+    const absBroken = join(repoPath, relBroken);
+
     try {
       // --- writeDoc + findRecordForSelection (found / not found) ---
       const originalContent = "function calculate(a, b) {\n  const sum = a + b;\n  return sum;\n}\n";
       writeFileSync(absA, originalContent);
       const { recordId: recordId1 } = documentationService.writeDoc(repoPath, relA, 0, originalContent.length, "Adds two numbers.");
       lines.push(`writeDoc: wrote record ${recordId1}`);
+
+      // --- canParseFile: real parseable file (true) and a genuinely broken one (false) ---
+      const canParseGood = documentationService.canParseFile(repoPath, relA);
+      writeFileSync(absBroken, "function broken( {{{ this is not valid syntax at all");
+      const canParseBad = documentationService.canParseFile(repoPath, relBroken);
+      lines.push(`canParseFile: real parseable file=${canParseGood} (expected true), genuinely broken file=${canParseBad} (expected false)`);
+
+      // --- listDocumentedFileIds: confirm it includes the file we just documented ---
+      const documentedIdsAfterA = documentationService.listDocumentedFileIds(repoPath);
+      lines.push(`listDocumentedFileIds (after documenting A only): includes relA=${documentedIdsAfterA.includes(relA)}`);
 
       const foundMatch = documentationService.findRecordForSelection(repoPath, relA, 0, originalContent.length);
       lines.push(`findRecordForSelection (exact match): ${foundMatch ? `found ${foundMatch.recordId}, matches written record=${foundMatch.recordId === recordId1}` : "null (WRONG, expected a match)"}`);
@@ -669,6 +682,13 @@ class GreetingService {
       const contentB = "const greeting = \"hi\";\n";
       writeFileSync(absB, contentB);
       documentationService.writeDoc(repoPath, relB, 0, contentB.length, "A greeting constant.");
+
+      // --- listDocumentedFileIds again: confirms it tracks REAL current state, not a stale snapshot -- A is gone (archived above), B is now the one documented ---
+      const documentedIdsAfterB = documentationService.listDocumentedFileIds(repoPath);
+      lines.push(
+        `listDocumentedFileIds (after A archived, B documented): includes relB=${documentedIdsAfterB.includes(relB)}, no longer includes relARenamed=${!documentedIdsAfterB.includes(relARenamed)}`
+      );
+
       const deleteMessagesB = documentationService.handleDeletedFile(repoPath, relB);
       lines.push(`handleDeletedFile (B): ${deleteMessagesB.length} message(s) returned`);
 
@@ -702,7 +722,7 @@ class GreetingService {
       lines.push(`ERROR: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
       vscode.window.showErrorMessage("rapid-docs: DocumentationService test failed partway, see proof file for what succeeded before that.");
     } finally {
-      for (const abs of [absA, absB, absC]) {
+      for (const abs of [absA, absB, absC, absBroken]) {
         try {
           if (existsSync(abs)) unlinkSync(abs);
         } catch {
@@ -844,7 +864,13 @@ class GreetingService {
   const testLiveWatchSectionDisposable = vscode.commands.registerCommand("rapidDocs.testLiveWatchSection", async () => {
     const lines: string[] = [];
     const scratchDir = mkdtempSync(join(tmpdir(), "rapid-docs-livewatch-section-scratch-"));
-    const correlationWindowMs = 150; // short, so the test doesn't wait on the real 500ms default
+    // 500ms matches the REAL production default (DEFAULT_CORRELATION_WINDOW_MS
+    // in live-watch.service.ts) rather than an artificially tight value --
+    // found for real that 150ms left too little headroom against genuine
+    // Windows unlink-detection latency (measured ~109ms on this machine),
+    // producing a false failure that wasn't a real bug, just an unrealistic
+    // test window undershooting what the actual, shipped default already covers.
+    const correlationWindowMs = 500;
 
     type Collected = { relativePaths: string[]; messageCount: number; at: number };
     const collected: Collected[] = [];
@@ -866,9 +892,17 @@ class GreetingService {
       const contentX = "export function xFunc() {\n  return \"x\";\n}\n";
       const contentY = "export function yFunc() {\n  return \"y\";\n}\n";
       const contentW = "export function wFunc() {\n  return \"w\";\n}\n";
+      const contentP1 = "export function p1Func() {\n  return \"p1\";\n}\n";
+      const contentP2 = "export function p2Func() {\n  return \"p2\";\n}\n";
       writeFileSync(join(scratchDir, "x.ts"), contentX);
       writeFileSync(join(scratchDir, "y.ts"), contentY);
       writeFileSync(join(scratchDir, "w.ts"), contentW);
+      // p1/p2 exist BEFORE start() specifically so their content is cache-primed --
+      // required for the unlink side of each rename pair below to have real
+      // cached content to correlate against (handleUnlink bails out immediately,
+      // uncorrelated, if contentCache has nothing for that exact path).
+      writeFileSync(join(scratchDir, "p1.ts"), contentP1);
+      writeFileSync(join(scratchDir, "p2.ts"), contentP2);
       execFileSync("git", ["add", "."], { cwd: scratchDir });
       execFileSync("git", ["commit", "-m", "init"], { cwd: scratchDir });
 
@@ -876,12 +910,46 @@ class GreetingService {
       await liveWatchService.start(scratchDir, correlationWindowMs);
       lines.push(`start() with a ${correlationWindowMs}ms correlation window: ok`);
 
-      // --- Test A: rename correlation (real OS rename -> real unlink+add pair) ---
+      // --- Test A1: rename correlation, UNLINK arrives first -- exercises
+      // handleAdd's own pendingUnlinks-matching loop specifically. A single
+      // real OS renameSync only ever exercises whichever order chokidar/the
+      // OS happens to report, so the two directions are triggered explicitly
+      // and separately here instead, via a deliberate small gap between the
+      // two raw fs operations to bias which one chokidar sees first. ---
+      unlinkSync(join(scratchDir, "p1.ts"));
+      await wait(60); // comfortably inside the 150ms correlation window
+      writeFileSync(join(scratchDir, "p1-renamed.ts"), contentP1);
+      await wait(correlationWindowMs * 4);
+      const p1Events = collected.filter((e) => e.relativePaths.includes("p1.ts") || e.relativePaths.includes("p1-renamed.ts"));
+      const p1Correlated = p1Events.some((e) => e.relativePaths.length === 2 && e.relativePaths.includes("p1.ts") && e.relativePaths.includes("p1-renamed.ts"));
+      lines.push(`Rename correlation, unlink-arrives-first (p1.ts -> p1-renamed.ts, exercises handleAdd's matching loop): ${p1Events.length} relevant event(s), correlated=${p1Correlated}`);
+      collected.length = 0;
+
+      // --- Test A2: rename correlation, ADD arrives first -- exercises
+      // handleUnlink's own pendingAdds-matching loop specifically. ---
+      const p2StartTime = Date.now();
+      writeFileSync(join(scratchDir, "p2-renamed.ts"), contentP2);
+      await wait(60);
+      unlinkSync(join(scratchDir, "p2.ts"));
+      await wait(correlationWindowMs * 4);
+      const p2Events = collected.filter((e) => e.relativePaths.includes("p2.ts") || e.relativePaths.includes("p2-renamed.ts"));
+      const p2Correlated = p2Events.some((e) => e.relativePaths.length === 2 && e.relativePaths.includes("p2.ts") && e.relativePaths.includes("p2-renamed.ts"));
+      lines.push(`Rename correlation, add-arrives-first (p2.ts -> p2-renamed.ts, exercises handleUnlink's matching loop): ${p2Events.length} relevant event(s), correlated=${p2Correlated}`);
+      if (!p2Correlated) {
+        lines.push(
+          `  DIAGNOSTIC: ${p2Events.map((e) => `[+${e.at - p2StartTime}ms] paths=${JSON.stringify(e.relativePaths)}`).join(" | ")}`
+        );
+      }
+      collected.length = 0;
+
+      // --- Also confirm a real OS rename (whichever order the OS actually
+      // uses) still correlates end to end, as a real-world sanity check on
+      // top of the two controlled directions above. ---
       renameSync(join(scratchDir, "x.ts"), join(scratchDir, "x-renamed.ts"));
       await wait(correlationWindowMs * 4);
       const renameEvents = collected.filter((e) => e.relativePaths.includes("x.ts") || e.relativePaths.includes("x-renamed.ts"));
       const correlated = renameEvents.some((e) => e.relativePaths.length === 2 && e.relativePaths.includes("x.ts") && e.relativePaths.includes("x-renamed.ts"));
-      lines.push(`Rename correlation (x.ts -> x-renamed.ts): ${renameEvents.length} relevant event(s), correlated as ONE rename (not two separate events)=${correlated}`);
+      lines.push(`Real OS rename, whichever order actually fires (x.ts -> x-renamed.ts): ${renameEvents.length} relevant event(s), correlated=${correlated}`);
       collected.length = 0;
 
       // --- Test B: unlink-only, no matching add -> falls through as a real delete once the window elapses ---
@@ -901,13 +969,28 @@ class GreetingService {
       lines.push(`Rapid changes to 2 different files: x-renamed.ts got its own event=${!!xEvent}, w.ts got its own event=${!!wEvent}, no cross-contamination=${collected.length === 2}`);
       collected.length = 0;
 
-      // --- Test D: a .rapid-docs storage file changing on its own -> rechecks the SOURCE file, not the storage path ---
+      // --- Test D1: a .rapid-docs storage file APPEARING (add) -> rechecks the SOURCE file, not the storage path ---
       const storageDir = join(scratchDir, ".rapid-docs");
       mkdirSync(storageDir, { recursive: true });
-      writeFileSync(join(storageDir, "w.ts.json"), JSON.stringify({ fileId: "w.ts", records: {} }, null, 2));
+      const storageFile = join(storageDir, "w.ts.json");
+      writeFileSync(storageFile, JSON.stringify({ fileId: "w.ts", records: {} }, null, 2));
       await wait(correlationWindowMs * 4);
-      const derivedEvent = collected.find((e) => e.relativePaths.includes("w.ts"));
-      lines.push(`Storage-only change (.rapid-docs/w.ts.json written directly): rechecked the real source file w.ts, not the storage path=${!!derivedEvent}`);
+      const derivedAddEvent = collected.find((e) => e.relativePaths.includes("w.ts"));
+      lines.push(`Storage-only ADD (.rapid-docs/w.ts.json created): rechecked the real source file w.ts, not the storage path=${!!derivedAddEvent}`);
+      collected.length = 0;
+
+      // --- Test D2: that SAME storage file being MODIFIED (change), the derive-check inside handleChange specifically ---
+      writeFileSync(storageFile, JSON.stringify({ fileId: "w.ts", records: { dummy: true } }, null, 2));
+      await wait(correlationWindowMs * 4);
+      const derivedChangeEvent = collected.find((e) => e.relativePaths.includes("w.ts"));
+      lines.push(`Storage-only CHANGE (.rapid-docs/w.ts.json modified): rechecked the real source file w.ts=${!!derivedChangeEvent}`);
+      collected.length = 0;
+
+      // --- Test D3: that SAME storage file being DELETED (unlink), the derive-check inside handleUnlink specifically ---
+      unlinkSync(storageFile);
+      await wait(correlationWindowMs * 4);
+      const derivedUnlinkEvent = collected.find((e) => e.relativePaths.includes("w.ts"));
+      lines.push(`Storage-only UNLINK (.rapid-docs/w.ts.json deleted): rechecked the real source file w.ts=${!!derivedUnlinkEvent}`);
 
       vscode.window.showInformationMessage("rapid-docs: LiveWatchService section test finished, see proof file for full results.");
     } catch (err) {

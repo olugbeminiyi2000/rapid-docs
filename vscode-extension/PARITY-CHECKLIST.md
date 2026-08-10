@@ -59,6 +59,10 @@ The remaining 9 methods verified via `rapidDocs.testDocumentationService`, one r
 
 **Real gap in the test's own cleanup, not `DocumentationService`:** `attachArchivedRecord` legitimately creates a brand new storage record for its target file, which the test's cleanup hadn't accounted for (only the three scratch source files were removed, not the storage `attachArchivedRecord` itself created). Found by checking `.rapid-docs/` directly afterward rather than assuming cleanup was complete; removed manually via PowerShell.
 
+**Re-audit pass (2026-08-10) found two more real gaps, since re-checked and closed:**
+- [x] `canParseFile` — was never called anywhere in the extension (different from `AstService.parseSource`, which was already tested; this is `DocumentationService`'s own convenience wrapper). Now tested directly: `true` for a real, parseable file, `false` for a genuinely broken-syntax scratch file.
+- [x] `listDocumentedFileIds` — was only ever exercised transitively inside `reconcile()`, never independently asserted. Now tested directly, twice: once confirming it includes a just-documented file, and again later confirming it tracks REAL current state, not a stale snapshot (correctly dropped the renamed-then-archived file A and picked up the newly-documented file B).
+
 ## Section 5: `SyncService` — CLOSED
 
 - [x] `reconcile` — thoroughly tested (397, then 590 after the parser fix, sampled and confirmed legitimate).
@@ -80,14 +84,20 @@ Skip/minified-density logic itself (not just the outcome) is already covered by 
 - [x] One real "messages" event — tested (a real file created on disk triggered a correct, accurate message within 1 second).
 - [x] `stop()` — tested as part of the Section 1 lifecycle fix (called from `deactivate()`, confirmed to complete without throwing).
 
-The remaining real-timing behaviors verified via `rapidDocs.testLiveWatchSection`, against a disposable scratch git repo with a short (150ms) correlation window and a temporary local listener (removed afterward so it can never leak into later runs):
+The remaining real-timing behaviors verified via `rapidDocs.testLiveWatchSection`, against a disposable scratch git repo with a production-realistic (500ms, matches `DEFAULT_CORRELATION_WINDOW_MS`) correlation window and a temporary local listener (removed afterward so it can never leak into later runs):
 
 - [x] Rename correlation window — a real OS `renameSync` (not a simulated event) produced exactly ONE correlated "messages" event naming both the old and new relative paths, not two separate uncorrelated events.
 - [x] Unlink-only (genuine delete, no matching add) — correctly fell through, once the correlation window elapsed, as a single event with just the one path, not wrongly paired with anything.
 - [x] Rapid, near-simultaneous changes to two different files — each produced its own separate, correct event, confirmed no cross-contamination between them.
-- [x] `deriveSourcePathFromStoragePath` (a collaborator's documentation arriving via `git pull`, only the `.rapid-docs/*.json` file changes, not the source) — writing directly to a storage file with no corresponding source-file change correctly triggered a recheck of the real source file, not the storage path itself.
+- [x] `deriveSourcePathFromStoragePath` (a collaborator's documentation arriving via `git pull`, only the `.rapid-docs/*.json` file changes, not the source) — verified through all three of its call sites, not just one: a storage file appearing (`add`), being modified (`change`), and being deleted (`unlink`) all correctly triggered a recheck of the real source file, not the storage path itself.
 
-**All six backend sections (1-6) are now CLOSED.** The entire reused backend, every method across `AstService`, `GitService`, `DocumentationService`, `SyncService`, and `LiveWatchService`, is proven working for real inside the Extension Host, with concrete evidence for each, not assumed from the isolated Jest suite or from "it compiled." Section 7 (UI layer) can now proceed on a fully verified foundation.
+**Re-audit pass (2026-08-10) found two more real, subtler gaps, since re-checked and closed:**
+- [x] Rename correlation was only proven in ONE direction by the original real-`renameSync` test (whichever order chokidar/the OS happened to report). The source has two separate matching loops, `handleAdd`'s search through `pendingUnlinks` and `handleUnlink`'s search through `pendingAdds`, and a single real rename only ever exercises one of them. Both are now triggered explicitly and independently (a controlled unlink-then-add pair, and a separate controlled add-then-unlink pair), each confirmed to correlate correctly.
+- [x] The three storage-derivation call sites (`add`/`change`/`unlink`) were reduced from "only `add` tested" to all three, per above.
+
+**A genuinely useful finding surfaced while closing gap 1, not a bug:** the first attempt used an aggressive 150ms test-only correlation window (to keep the test fast) and got a real, reproducible failure on the add-then-unlink direction. Diagnostic timestamps showed why: the `add` side's own timeout fired at +165ms while the `unlink` side wasn't even detected by chokidar until +169ms, a 4-millisecond miss caused by real Windows unlink-detection latency (~109ms measured on this machine) leaving too little headroom under a 150ms window. Re-run with the real production default (500ms) passed cleanly and reliably. Conclusion, confirmed rather than assumed: the correlation logic itself was never broken; a test-only window tighter than the shipped default undershot real OS event latency. Worth remembering if `DEFAULT_CORRELATION_WINDOW_MS` is ever tuned down in `src/` later, this is the real-world latency budget it needs to keep clearing.
+
+**All six backend sections (1-6) are now CLOSED, re-audited, and holding up.** The entire reused backend, every method across `AstService`, `GitService`, `DocumentationService`, `SyncService`, and `LiveWatchService`, is proven working for real inside the Extension Host, with concrete evidence for each, not assumed from the isolated Jest suite or from "it compiled." Section 7 (UI layer) can now proceed on a fully verified foundation.
 
 ## Section 7: UI layer — NOT STARTED (blocked on Sections 2-6 closing first)
 
