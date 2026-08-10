@@ -23,14 +23,19 @@ All five real methods chained together against one self-contained sample (a real
 - [x] `filterByHighlight` — narrowed to the method's own byte range, returned 12 nodes, verified every one of them is genuinely contained (`start >= highlightStart && end <= highlightEnd`), not just counted.
 - [x] `hashNode` — determinism confirmed (hashing the same real node twice produced the identical hash), distinctness confirmed (hashing a different real node produced a different hash).
 
-## Section 3: `GitService` — PARTIAL
+## Section 3: `GitService` — CLOSED
+
+All 7 real methods verified via `rapidDocs.testGitService`:
 
 - [x] `getHeadCommit` — directly tested, returned `359137c1a134bff06a351de3f5418d7059ea4963`, confirmed to exactly match `git rev-parse HEAD`.
-- [ ] `listTrackedFiles`, `listWorkingTreeFiles` — only exercised transitively via `reconcile()`, never directly.
-- [ ] `listIgnoredPaths` — untested.
-- [ ] `getLastSyncedCommit`/`setLastSyncedCommit` — untested. These matter specifically for `sync()`'s commit-diff path (Section 5), not `reconcile()`.
-- [ ] `diff` — untested. Same, matters for `sync()`.
-- [ ] `compareContent` — untested.
+- [x] `listTrackedFiles` — 51 real files, confirmed `package.json` is among them.
+- [x] `listWorkingTreeFiles` — 51 real files, same count as tracked (nothing currently untracked-but-not-ignored), confirmed `package.json` is among them.
+- [x] `listIgnoredPaths` — 9 real entries, confirmed `node_modules` is among them.
+- [x] `getLastSyncedCommit`/`setLastSyncedCommit` — real round-trip against a genuinely disposable scratch git repo (never touches this repo's own `.git/rapid-docs/last-sync.json`): confirmed `null` before any set, confirmed the exact written value `"abc123deadbeef"` came back after.
+- [x] `diff` — checked against this repo's OWN real, current git history (`HEAD~1` vs `HEAD`, computed fresh at test time via raw `git` calls, not hardcoded hashes that would go stale). Expected changed files (from real `git diff --name-only`) matched the service's own result exactly.
+- [x] `compareContent` — real similarity score (`50`) returned for genuinely similar content, `null` correctly returned for unrelated content.
+
+**Real bug found in the test harness itself, not `GitService`:** the scratch-repo cleanup (`rmSync`) hit a genuine Windows `EPERM` (a file lock held on something inside `.git/` longer than expected), even after adding `maxRetries`/`retryDelay`. Fixed by making cleanup failure non-fatal (log and continue) so a stubborn OS-level lock can never again mask real test evidence gathered before it. Leftover scratch dirs cleaned up manually via PowerShell afterward.
 
 ## Section 4: `DocumentationService` — PARTIAL, the big one
 
