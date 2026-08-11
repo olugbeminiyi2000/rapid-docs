@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import { join } from "path";
 import type { DocumentationService, DocumentedSectionItem } from "../../types";
 import type { HighlightController } from "../../highlighting/highlightController";
+import type { ActiveEditorTracker } from "../../editor-interactions/activeEditorTracker";
 import { renderWebviewShell } from "../shared/webviewShell";
 
 // Replicates electron/main.ts's "docs:findDocumentedNodes" handler exactly
@@ -90,7 +91,8 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
 
   constructor(
     private readonly documentationService: DocumentationService,
-    private readonly highlightController: HighlightController
+    private readonly highlightController: HighlightController,
+    private readonly activeEditorTracker: ActiveEditorTracker
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -193,7 +195,10 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
   }
 
   private async handleMessage(message: FromWebviewMessage): Promise<void> {
-    const editor = vscode.window.activeTextEditor;
+    // NOT vscode.window.activeTextEditor -- clicking any row/button inside
+    // this webview shifts VSCode's focus away from the source file, the
+    // same real bug found and fixed in Compose. See activeEditorTracker.ts.
+    const editor = this.activeEditorTracker.getEditor();
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!editor || !folder) return;
     const repoPath = folder.uri.fsPath;
@@ -234,7 +239,14 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
   }
 
   async refresh(): Promise<void> {
-    const editor = vscode.window.activeTextEditor;
+    // NOT vscode.window.activeTextEditor -- real bug found via manual
+    // testing: refresh() runs immediately after a successful Compose
+    // submission, at which point the Compose PANEL (not the code editor)
+    // has focus, so activeTextEditor was undefined and the list went blank
+    // ("Nothing documented in this file yet") until the user clicked back
+    // into the real file. The tracker keeps pointing at the last REAL text
+    // editor throughout, exactly what's needed here.
+    const editor = this.activeEditorTracker.getEditor();
     const folder = vscode.workspace.workspaceFolders?.[0];
     if (!editor || !folder) {
       this.items = [];

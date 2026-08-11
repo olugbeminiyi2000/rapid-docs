@@ -59,6 +59,14 @@
       {
         "command": "rapidDocs.testLiveWatchSection",
         "title": "rapid-docs: Test LiveWatchService (Section 6)"
+      },
+      {
+        "command": "rapidDocs.openCompose",
+        "title": "rapid-docs: Document Selection (open Compose)"
+      },
+      {
+        "command": "rapidDocs.testBeginDriftUpdate",
+        "title": "rapid-docs: Test Begin Drift Update (Section 7.3, temporary until 7.4's context menu)"
       }
     ],
     "viewsContainers": {
@@ -75,11 +83,6 @@
         {
           "id": "rapidDocsDocumentedSections",
           "name": "Documented Sections",
-          "type": "webview"
-        },
-        {
-          "id": "rapidDocsTestFoundation",
-          "name": "Webview Foundation Test (7.1)",
           "type": "webview"
         }
       ]

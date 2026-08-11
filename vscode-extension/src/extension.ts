@@ -7,8 +7,9 @@ import { createDiagnosticsController, activateDiagnosticsLiveWiring } from "./di
 import { createHighlightController } from "./highlighting/highlightController";
 import { DocumentedSectionsViewProvider } from "./webviews/documentedSections/documentedSectionsViewProvider";
 import { registerDiagnosticClickHighlight } from "./editor-interactions/diagnosticClickHighlight";
+import { createActiveEditorTracker } from "./editor-interactions/activeEditorTracker";
+import { registerComposeCommands } from "./webviews/compose/registerComposeCommands";
 import { registerAllTestCommands } from "./test-commands/registerAll";
-import { TestFoundationViewProvider } from "./webviews/testFoundation/testFoundationViewProvider";
 
 // Module-scoped (not local to activate()) specifically so deactivate() can
 // reach them for real cleanup -- electron/main.ts never had to solve this,
@@ -47,11 +48,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   liveWatchServiceRef = backend.liveWatchService;
 
   const highlightController = createHighlightController(context);
+  const activeEditorTracker = createActiveEditorTracker(context);
 
   // Section 7.2: Documented Sections rebuilt as a Webview (not a TreeView --
   // see PARITY-CHECKLIST.md's 2026-08-11 decision). File-scoped, same as the
   // Electron panel was, so it refreshes whenever the active file changes.
-  const documentedSectionsProvider = new DocumentedSectionsViewProvider(backend.documentationService, highlightController);
+  const documentedSectionsProvider = new DocumentedSectionsViewProvider(backend.documentationService, highlightController, activeEditorTracker);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(DocumentedSectionsViewProvider.viewId, documentedSectionsProvider)
   );
@@ -67,18 +69,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // editor itself.
   registerDiagnosticClickHighlight(context, highlightController);
 
+  // Section 7.3: Compose, a real WebviewPanel opened beside the editor
+  // (not docked in the sidebar) per the 2026-08-11 decision, so code and
+  // the compose form stay visible together.
+  registerComposeCommands(context, {
+    documentationService: backend.documentationService,
+    highlightController,
+    refreshDocumentedSections: () => documentedSectionsProvider.refresh(),
+    activeEditorTracker,
+  });
+
   // Section 7.1 re-confirmation: this previously only ever ran via manual
   // test commands -- a real user opening the extension got no initial
   // Problems-panel populate and no live updates until they happened to run
   // one themselves. See diagnosticsController.ts for the real, matching-
   // electron/main.ts catch-up-then-watch sequence.
   await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, backend.liveWatchService);
-
-  // Section 7.1: the webview-infrastructure proof, separate from everything
-  // above -- see PARITY-CHECKLIST.md Section 7.1.
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider(TestFoundationViewProvider.viewId, new TestFoundationViewProvider())
-  );
 
   registerAllTestCommands(context, {
     backend,
