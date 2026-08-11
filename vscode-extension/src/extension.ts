@@ -4,7 +4,9 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { bootstrapBackend } from "./backend/bootstrap";
 import { createDiagnosticsController, activateDiagnosticsLiveWiring } from "./diagnostics/diagnosticsController";
-import { registerDocumentedSections } from "./documented-sections/documentedSectionsProvider";
+import { createHighlightController } from "./highlighting/highlightController";
+import { DocumentedSectionsViewProvider } from "./webviews/documentedSections/documentedSectionsViewProvider";
+import { registerDiagnosticClickHighlight } from "./editor-interactions/diagnosticClickHighlight";
 import { registerAllTestCommands } from "./test-commands/registerAll";
 import { TestFoundationViewProvider } from "./webviews/testFoundation/testFoundationViewProvider";
 
@@ -32,7 +34,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // documented." insertedTextBackground is a real, already-themed VSCode
   // color (used for diff-added lines), reused here rather than picking an
   // arbitrary color, so it adapts to whatever theme (light/dark/high-
-  // contrast) the user actually has.
+  // contrast) the user actually has. Kept as its own standalone type for the
+  // Section 1-era testDecorations smoke test; the real, toggled decorations
+  // used by Documented Sections/Problems live in highlightController below.
   const documentedDecorationType = vscode.window.createTextEditorDecorationType({
     backgroundColor: new vscode.ThemeColor("diffEditor.insertedTextBackground"),
   });
@@ -42,8 +46,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   appContextRef = backend.appContext;
   liveWatchServiceRef = backend.liveWatchService;
 
-  const documentedSections = registerDocumentedSections(context, backend.documentationService, documentedDecorationType);
-  await documentedSections.refresh();
+  const highlightController = createHighlightController(context);
+
+  // Section 7.2: Documented Sections rebuilt as a Webview (not a TreeView --
+  // see PARITY-CHECKLIST.md's 2026-08-11 decision). File-scoped, same as the
+  // Electron panel was, so it refreshes whenever the active file changes.
+  const documentedSectionsProvider = new DocumentedSectionsViewProvider(backend.documentationService, highlightController);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider(DocumentedSectionsViewProvider.viewId, documentedSectionsProvider)
+  );
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => void documentedSectionsProvider.refresh()));
+  await documentedSectionsProvider.refresh();
+
+  // Click-inside-a-documented-region (the Electron-inspired auto-jump on
+  // plain click) was tried and deliberately dropped 2026-08-11 after real
+  // testing: it fought against starting a NEW, smaller selection inside an
+  // already-documented region -- every click meant to begin one instead got
+  // hijacked into the full region's bounds. Highlighting now comes ONLY
+  // from an explicit row click in Documented Sections, never from the
+  // editor itself.
+  registerDiagnosticClickHighlight(context, highlightController);
 
   // Section 7.1 re-confirmation: this previously only ever ran via manual
   // test commands -- a real user opening the extension got no initial
@@ -52,8 +74,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // electron/main.ts catch-up-then-watch sequence.
   await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, backend.liveWatchService);
 
-  // Section 7.1: the new webview-infrastructure proof, separate from
-  // everything above -- see PARITY-CHECKLIST.md Section 7.1.
+  // Section 7.1: the webview-infrastructure proof, separate from everything
+  // above -- see PARITY-CHECKLIST.md Section 7.1.
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(TestFoundationViewProvider.viewId, new TestFoundationViewProvider())
   );
@@ -62,7 +84,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     backend,
     diagnosticCollection,
     documentedDecorationType,
-    refreshDocumentedSectionsView: documentedSections.refresh,
+    refreshDocumentedSectionsView: () => documentedSectionsProvider.refresh(),
+    highlightController,
   });
 }
 

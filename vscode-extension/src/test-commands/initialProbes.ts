@@ -4,6 +4,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import type { GitService, SyncService, DocumentationService, LiveWatchService } from "../types";
 import { messagesToDiagnosticsByFile } from "../diagnostics/diagnosticsController";
+import type { HighlightController } from "../highlighting/highlightController";
 
 export interface InitialProbesDeps {
   gitService: GitService;
@@ -13,6 +14,7 @@ export interface InitialProbesDeps {
   diagnosticCollection: vscode.DiagnosticCollection;
   documentedDecorationType: vscode.TextEditorDecorationType;
   refreshDocumentedSectionsView: () => Promise<void>;
+  highlightController: HighlightController;
 }
 
 // The original, pre-section-numbering smoke tests: rapidDocs.helloWorld and
@@ -160,6 +162,11 @@ export function registerInitialProbes(context: vscode.ExtensionContext, deps: In
 
     vscode.window.showInformationMessage(`rapid-docs: wrote a real doc record (${recordId}) for ${relativePath}.`);
     writeFileSync(join(tmpdir(), "rapid-docs-writedoc-proof.txt"), `${new Date().toISOString()}\n${relativePath}\n${recordId}\n`);
+    // Real feedback (2026-08-11): any highlight still showing (e.g. a
+    // diagnostic-severity one for the very selection just documented) must
+    // not linger past the point it stopped being accurate -- writing a doc
+    // makes whatever it was showing stale immediately.
+    deps.highlightController.clear(editor);
     await deps.refreshDocumentedSectionsView();
   });
   context.subscriptions.push(testWriteDocDisposable);

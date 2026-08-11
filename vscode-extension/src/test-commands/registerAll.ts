@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { RapidDocsBackend } from "../backend/bootstrap";
+import type { HighlightController } from "../highlighting/highlightController";
 import { registerInitialProbes } from "./initialProbes";
 import { registerTestAstService } from "./testAstService";
 import { registerTestGitService } from "./testGitService";
@@ -12,6 +13,7 @@ export interface RegisterTestCommandsDeps {
   diagnosticCollection: vscode.DiagnosticCollection;
   documentedDecorationType: vscode.TextEditorDecorationType;
   refreshDocumentedSectionsView: () => Promise<void>;
+  highlightController: HighlightController;
 }
 
 // Registers every Section 1-6 proof-file test command (rapidDocs.test*),
@@ -28,6 +30,7 @@ export function registerAllTestCommands(context: vscode.ExtensionContext, deps: 
     diagnosticCollection: deps.diagnosticCollection,
     documentedDecorationType: deps.documentedDecorationType,
     refreshDocumentedSectionsView: deps.refreshDocumentedSectionsView,
+    highlightController: deps.highlightController,
   });
   registerTestAstService(context, backend.astService);
   registerTestGitService(context, backend.gitService);

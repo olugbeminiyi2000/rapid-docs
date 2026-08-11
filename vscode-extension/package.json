@@ -41,20 +41,6 @@
         "title": "rapid-docs: Test Decorations (highlight documented regions)"
       },
       {
-        "command": "rapidDocs.revealDocumentedSection",
-        "title": "rapid-docs: Reveal Documented Section"
-      },
-      {
-        "command": "rapidDocs.copyDocumentedSection",
-        "title": "rapid-docs: Copy Documentation Text",
-        "icon": "$(copy)"
-      },
-      {
-        "command": "rapidDocs.deleteDocumentedSection",
-        "title": "rapid-docs: Delete Documentation",
-        "icon": "$(trash)"
-      },
-      {
         "command": "rapidDocs.testAstService",
         "title": "rapid-docs: Test AstService (Section 2)"
       },
@@ -88,26 +74,13 @@
       "rapidDocs": [
         {
           "id": "rapidDocsDocumentedSections",
-          "name": "Documented Sections"
+          "name": "Documented Sections",
+          "type": "webview"
         },
         {
           "id": "rapidDocsTestFoundation",
           "name": "Webview Foundation Test (7.1)",
           "type": "webview"
-        }
-      ]
-    },
-    "menus": {
-      "view/item/context": [
-        {
-          "command": "rapidDocs.copyDocumentedSection",
-          "when": "view == rapidDocsDocumentedSections && viewItem == rapidDocsSection",
-          "group": "inline"
-        },
-        {
-          "command": "rapidDocs.deleteDocumentedSection",
-          "when": "view == rapidDocsDocumentedSections && viewItem == rapidDocsSection",
-          "group": "inline"
         }
       ]
     }
