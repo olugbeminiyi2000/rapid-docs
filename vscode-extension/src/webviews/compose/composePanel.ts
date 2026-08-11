@@ -47,6 +47,10 @@ export class ComposePanel {
       vscode.ViewColumn.Beside,
       { enableScripts: true, retainContextWhenHidden: true }
     );
+    // Unlike the Activity Bar icon (forced monochrome by VSCode, no
+    // exceptions), a WebviewPanel's own tab icon supports real, full color --
+    // real feedback: wanted the blue bolt specifically here.
+    this.panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "compose-icon.svg");
     context.subscriptions.push(this.panel);
     this.panel.onDidDispose(() => {
       if (ComposePanel.instance === this) ComposePanel.instance = null;
@@ -84,6 +88,21 @@ export class ComposePanel {
     void this.panel.webview.postMessage({ type: "clearDriftUpdateMode" });
   }
 
+  // Real bug found via manual testing: opening Compose "fresh" for a
+  // genuinely undocumented selection reused the EXISTING panel instance
+  // (openOrReveal only reveals it, doesn't reset anything) -- if that panel
+  // was still showing leftover drift-update state (button reading "Update
+  // Documentation", old text still in the textarea) from an earlier,
+  // unrelated action, it kept showing that stale state indefinitely, even
+  // though the actual submit logic was already correctly routed to writeDoc,
+  // not updateDriftedDoc. Unlike clearDriftUpdateMode (label only), this
+  // also clears the textarea and any leftover status message -- a genuinely
+  // fresh start, not just a relabeled button.
+  resetToFresh(): void {
+    this.pendingDriftUpdate = null;
+    void this.panel.webview.postMessage({ type: "resetFresh" });
+  }
+
   private render(): void {
     this.panel.webview.html = renderWebviewShell({
       webview: this.panel.webview,
@@ -112,6 +131,12 @@ export class ComposePanel {
             textEl.focus();
           } else if (message.type === 'clearDriftUpdateMode') {
             buttonEl.textContent = 'Document Selection';
+          } else if (message.type === 'resetFresh') {
+            if (statusClearTimeout) clearTimeout(statusClearTimeout);
+            textEl.value = '';
+            buttonEl.textContent = 'Document Selection';
+            statusEl.textContent = '';
+            statusEl.className = '';
           } else if (message.type === 'submitResult') {
             if (statusClearTimeout) clearTimeout(statusClearTimeout);
             statusEl.textContent = message.text;

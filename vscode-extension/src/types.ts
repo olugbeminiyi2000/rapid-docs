@@ -79,8 +79,8 @@ export interface DocumentationService {
   storagePathFor(repoPath: string, relativePath: string): string;
   canParseFile(repoPath: string, relativePath: string): boolean;
   writeDoc(repoPath: string, relativePath: string, start: number, end: number, docText: string): { recordId: string };
-  findRecordForSelection(repoPath: string, relativePath: string, start: number, end: number): { recordId: string } | null;
-  findStaleRecordForSelection(repoPath: string, relativePath: string, start: number, end: number): { recordId: string } | null;
+  findRecordForSelection(repoPath: string, relativePath: string, start: number, end: number): { recordId: string; docText: string } | null;
+  findStaleRecordForSelection(repoPath: string, relativePath: string, start: number, end: number): { recordId: string; docText: string } | null;
   updateDriftedDoc(
     repoPath: string,
     relativePath: string,

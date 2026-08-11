@@ -6,9 +6,10 @@ import { bootstrapBackend } from "./backend/bootstrap";
 import { createDiagnosticsController, activateDiagnosticsLiveWiring } from "./diagnostics/diagnosticsController";
 import { createHighlightController } from "./highlighting/highlightController";
 import { DocumentedSectionsViewProvider } from "./webviews/documentedSections/documentedSectionsViewProvider";
-import { registerDiagnosticClickHighlight } from "./editor-interactions/diagnosticClickHighlight";
+import { ProblemsViewProvider } from "./webviews/problems/problemsViewProvider";
 import { createActiveEditorTracker } from "./editor-interactions/activeEditorTracker";
 import { registerComposeCommands } from "./webviews/compose/registerComposeCommands";
+import { registerEditorContextMenu } from "./editor-interactions/registerEditorContextMenu";
 import { registerAllTestCommands } from "./test-commands/registerAll";
 
 // Module-scoped (not local to activate()) specifically so deactivate() can
@@ -57,17 +58,25 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(DocumentedSectionsViewProvider.viewId, documentedSectionsProvider)
   );
-  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(() => void documentedSectionsProvider.refresh()));
-  await documentedSectionsProvider.refresh();
 
-  // Click-inside-a-documented-region (the Electron-inspired auto-jump on
-  // plain click) was tried and deliberately dropped 2026-08-11 after real
-  // testing: it fought against starting a NEW, smaller selection inside an
-  // already-documented region -- every click meant to begin one instead got
-  // hijacked into the full region's bounds. Highlighting now comes ONLY
-  // from an explicit row click in Documented Sections, never from the
-  // editor itself.
-  registerDiagnosticClickHighlight(context, highlightController);
+  // Section 7.1 (rebuilt 2026-08-11): Problems as a real webview, not just
+  // the native DiagnosticCollection -- see problemsViewProvider.ts's own
+  // header comment for why (native Problems gives no closure-bound click
+  // hook, which is what caused the diagnostic-click bugs; this replicates
+  // electron/renderer.js's real mechanism instead of reconstructing state
+  // after the fact). diagnosticClickHighlight.ts (the reconstruction-based
+  // approach) is retired now that this exists.
+  const problemsProvider = new ProblemsViewProvider(backend.documentationService, highlightController, activeEditorTracker, () => documentedSectionsProvider.refresh());
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider(ProblemsViewProvider.viewId, problemsProvider));
+
+  function onActiveEditorChanged(): void {
+    void documentedSectionsProvider.refresh();
+    const editor = vscode.window.activeTextEditor;
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    problemsProvider.setActiveFile(editor && folder ? vscode.workspace.asRelativePath(editor.document.uri, false) : null);
+  }
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(onActiveEditorChanged));
+  onActiveEditorChanged();
 
   // Section 7.3: Compose, a real WebviewPanel opened beside the editor
   // (not docked in the sidebar) per the 2026-08-11 decision, so code and
@@ -79,12 +88,30 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     activeEditorTracker,
   });
 
+  // Section 7.4 (rebuilt 2026-08-11): one static menu entry that opens a
+  // QuickPick computed fresh at invocation time -- the real VSCode
+  // equivalent of electron/renderer.js's own showContextMenu, not a
+  // declarative context-key-gated menu (that first version raced against
+  // its own async context-key updates and showed the wrong action for the
+  // current selection). Reuses the exact same underlying paths 7.2/7.3
+  // already proved (Documented Sections' own edit/delete, Compose's
+  // beginDriftUpdate/resetToFresh), not new logic.
+  registerEditorContextMenu(context, {
+    documentationService: backend.documentationService,
+    activeEditorTracker,
+    documentedSectionsProvider,
+    highlightController,
+    refreshDocumentedSections: () => documentedSectionsProvider.refresh(),
+  });
+
   // Section 7.1 re-confirmation: this previously only ever ran via manual
   // test commands -- a real user opening the extension got no initial
   // Problems-panel populate and no live updates until they happened to run
   // one themselves. See diagnosticsController.ts for the real, matching-
-  // electron/main.ts catch-up-then-watch sequence.
-  await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, backend.liveWatchService);
+  // electron/main.ts catch-up-then-watch sequence. Also feeds problemsProvider
+  // the full, repo-wide message list (electron's own messagesByFile
+  // equivalent), not just the native DiagnosticCollection.
+  await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, backend.liveWatchService, problemsProvider);
 
   registerAllTestCommands(context, {
     backend,

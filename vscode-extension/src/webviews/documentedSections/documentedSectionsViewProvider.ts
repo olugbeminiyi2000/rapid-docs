@@ -130,6 +130,27 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
         const listEl = document.getElementById('list');
         let items = [];
 
+        // Shared by the row's own Edit button AND a 'beginEdit' message from
+        // the extension host (the editor's right-click "Edit documentation"
+        // has no DOM of its own to swap in-place -- it reuses this exact
+        // same interaction on the corresponding row instead, matching
+        // electron/renderer.js's own editSectionFromContextMenu, renderer.js:854-859).
+        function beginEdit(row, item) {
+          const textEl = row.querySelector('.text');
+          if (!textEl) return; // already mid-edit
+          const input = document.createElement('input');
+          input.value = item.docText;
+          input.style.width = '100%';
+          textEl.replaceWith(input);
+          input.focus();
+          const submit = () => vscode.postMessage({ type: 'editSubmit', recordId: item.recordId, newText: input.value });
+          input.addEventListener('keydown', (ke) => {
+            if (ke.key === 'Enter') submit();
+            else if (ke.key === 'Escape') render();
+          });
+          input.addEventListener('blur', () => submit());
+        }
+
         function render() {
           if (items.length === 0) {
             listEl.innerHTML = '<div class="empty">Nothing documented in this file yet.</div>';
@@ -139,6 +160,7 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
           for (const item of items) {
             const row = document.createElement('div');
             row.className = 'row';
+            row.dataset.recordId = item.recordId;
             const truncated = item.docText.length > 60 ? item.docText.slice(0, 60) + '...' : item.docText;
             row.innerHTML =
               '<div class="row-header">' +
@@ -163,18 +185,7 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
             });
             row.querySelector('.edit').addEventListener('click', (e) => {
               e.stopPropagation();
-              const textEl = row.querySelector('.text');
-              const input = document.createElement('input');
-              input.value = item.docText;
-              input.style.width = '100%';
-              textEl.replaceWith(input);
-              input.focus();
-              const submit = () => vscode.postMessage({ type: 'editSubmit', recordId: item.recordId, newText: input.value });
-              input.addEventListener('keydown', (ke) => {
-                if (ke.key === 'Enter') submit();
-                else if (ke.key === 'Escape') render();
-              });
-              input.addEventListener('blur', () => submit());
+              beginEdit(row, item);
             });
 
             listEl.appendChild(row);
@@ -186,6 +197,10 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
           if (message.type === 'setItems') {
             items = message.items;
             render();
+          } else if (message.type === 'beginEdit') {
+            const row = listEl.querySelector('[data-record-id="' + message.recordId + '"]');
+            const item = items.find((i) => i.recordId === message.recordId);
+            if (row && item) beginEdit(row, item);
           }
         });
 
@@ -278,5 +293,19 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
 
   currentItems(): DocumentedSectionItem[] {
     return this.items;
+  }
+
+  // The editor's right-click "Edit documentation" (7.4) has no DOM of its
+  // own to swap in-place -- it reuses the SAME interaction on the
+  // corresponding row instead, scrolled/revealed into view first in case
+  // the panel wasn't already open. Matches electron/renderer.js's own
+  // editSectionFromContextMenu (renderer.js:854-859) exactly.
+  async beginEditFromContextMenu(recordId: string): Promise<void> {
+    if (this.webviewView) {
+      this.webviewView.show(true);
+    } else {
+      await vscode.commands.executeCommand(`${DocumentedSectionsViewProvider.viewId}.focus`);
+    }
+    void this.webviewView?.webview.postMessage({ type: "beginEdit", recordId });
   }
 }

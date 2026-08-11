@@ -55,9 +55,18 @@ export function createHighlightController(context: vscode.ExtensionContext): Hig
     // ("much more lighter" requested) once applied across a whole span.
     // Still fully theme-driven, just toned down, not replaced with a
     // hardcoded color.
+    // Real feedback (2026-08-11): neither editor.findMatchHighlightBackground
+    // NOR editorWarning.foreground actually rendered as a real, recognizable
+    // yellow in the user's theme -- confirmed by testing both, real
+    // evidence, not assumed. Theme tokens are unreliable for "must look like
+    // THIS specific yellow" (a bumblebee-style gold), so this is a
+    // deliberate, disclosed exception to the "always theme-driven" approach
+    // used for documented/info/error: a fixed hex color, not a ThemeColor.
+    // Won't auto-adjust for light vs dark themes the way the other three do.
     warning: vscode.window.createTextEditorDecorationType({
-      backgroundColor: new vscode.ThemeColor("inputValidation.warningBackground"),
-      opacity: "0.5",
+      backgroundColor: "#FFC10766", // bumblebee-gold at ~40% alpha
+      border: "1px solid",
+      borderColor: "#FFC107", // full-strength, so the outline stays visible even under the native selection overlay
     }),
     // Real feedback (2026-08-11): should look like VSCode's own native
     // text-selection color (the light blue shown while dragging a

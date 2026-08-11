@@ -62,13 +62,22 @@
       },
       {
         "command": "rapidDocs.openCompose",
-        "title": "rapid-docs: Document Selection (open Compose)"
+        "title": "rapid-docs: Document selection"
       },
       {
-        "command": "rapidDocs.testBeginDriftUpdate",
-        "title": "rapid-docs: Test Begin Drift Update (Section 7.3, temporary until 7.4's context menu)"
+        "command": "rapidDocs.showEditorActions",
+        "title": "rapid-docs: Actions..."
       }
     ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "rapidDocs.showEditorActions",
+          "when": "editorTextFocus",
+          "group": "rapidDocs@1"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -83,6 +92,11 @@
         {
           "id": "rapidDocsDocumentedSections",
           "name": "Documented Sections",
+          "type": "webview"
+        },
+        {
+          "id": "rapidDocsProblems",
+          "name": "Problems",
           "type": "webview"
         }
       ]
