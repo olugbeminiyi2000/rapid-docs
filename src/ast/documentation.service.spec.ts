@@ -587,6 +587,83 @@ const x = 10;
       expect(infoMessages.length).toBe(3);
     });
 
+    // Real bug found via manual testing: two documented functions with
+    // identical params/body (only the name differs, e.g. copy-pasted-then-
+    // renamed) confused the drift-anchor computation for whichever one gets
+    // renamed. matchingRanges is found by filtering ALL current nodes by
+    // hash membership (documentation.service.ts's own anchor computation),
+    // with no way to tell "this record's own surviving node" apart from an
+    // unrelated node elsewhere that merely happens to hash identically --
+    // real when the sibling function's params/body are structurally
+    // untouched and therefore hash-identical to the renamed one's own
+    // surviving members. beta's own anchors must never leak into alpha's span.
+    it("does not misattribute a drifted record's matchingRanges to a different, structurally-identical function elsewhere in the file", () => {
+      const twinCode = `function alpha(a, b) {\n  return a + b;\n}\n\nfunction beta(a, b) {\n  return a + b;\n}\n`;
+      writeFileSync(join(repoPath, relativePath), twinCode);
+
+      const alphaStart = 0;
+      const alphaEnd = twinCode.indexOf("\n\nfunction beta") + 1;
+      const betaStart = twinCode.indexOf("function beta");
+      const betaEnd = twinCode.length;
+
+      docService.writeDoc(repoPath, relativePath, alphaStart, alphaEnd, "documents alpha");
+      const { recordId: betaRecordId } = docService.writeDoc(repoPath, relativePath, betaStart, betaEnd, "documents beta");
+
+      const renamedTwinCode = twinCode.replace("function beta(", "function betaRenamed(");
+      writeFileSync(join(repoPath, relativePath), renamedTwinCode);
+
+      const newBetaStart = renamedTwinCode.indexOf("function betaRenamed");
+      const newBetaEnd = renamedTwinCode.length;
+
+      const report = docService.checkFile(repoPath, relativePath);
+      const betaDrift = report.driftResults.find((d) => d.recordId === betaRecordId);
+
+      expect(betaDrift?.status).toBe("partially_stale");
+      expect(betaDrift!.matchingRanges.length).toBeGreaterThan(0);
+      for (const range of betaDrift!.matchingRanges) {
+        expect(range.start).toBeGreaterThanOrEqual(newBetaStart);
+        expect(range.end).toBeLessThanOrEqual(newBetaEnd);
+      }
+    });
+
+    // A real, HARDER variant found via manual testing right after the fix
+    // above: renaming BOTH twins at once (not just one) leaves NEITHER
+    // record with any still-unique name to anchor from -- their surviving
+    // params/body are still hash-identical to EACH OTHER, so there is
+    // genuinely no information left, for either record, that could say
+    // which physical occurrence is really its own. There is no correct
+    // answer to guess here (unlike the single-rename case, where the
+    // OTHER, untouched twin's still-unique name gave a real seed to grow
+    // from) -- the honest behavior is the same one findDocumentedNodes
+    // already uses elsewhere: report the drift, but leave matchingRanges
+    // empty rather than confidently point at the wrong function.
+    it("reports no matchingRanges (rather than a wrong guess) when BOTH twins are renamed and neither has a unique anchor left", () => {
+      const twinCode = `function alpha(a, b) {\n  return a + b;\n}\n\nfunction beta(a, b) {\n  return a + b;\n}\n`;
+      writeFileSync(join(repoPath, relativePath), twinCode);
+
+      const alphaStart = 0;
+      const alphaEnd = twinCode.indexOf("\n\nfunction beta") + 1;
+      const betaStart = twinCode.indexOf("function beta");
+      const betaEnd = twinCode.length;
+
+      const { recordId: alphaRecordId } = docService.writeDoc(repoPath, relativePath, alphaStart, alphaEnd, "documents alpha");
+      const { recordId: betaRecordId } = docService.writeDoc(repoPath, relativePath, betaStart, betaEnd, "documents beta");
+
+      const bothRenamedCode = twinCode.replace("function alpha(", "function alphaRenamed(").replace("function beta(", "function betaRenamed(");
+      writeFileSync(join(repoPath, relativePath), bothRenamedCode);
+
+      const report = docService.checkFile(repoPath, relativePath);
+      const alphaDrift = report.driftResults.find((d) => d.recordId === alphaRecordId);
+      const betaDrift = report.driftResults.find((d) => d.recordId === betaRecordId);
+
+      expect(alphaDrift?.status).toBe("partially_stale");
+      expect(betaDrift?.status).toBe("partially_stale");
+      // Never wrong is the bar, not "correctly located" -- there is no
+      // reliable position data left to locate either one by.
+      expect(alphaDrift!.matchingRanges).toEqual([]);
+      expect(betaDrift!.matchingRanges).toEqual([]);
+    });
+
     // Real user feedback: a docText-quote subject like "greet() builds and
     // logs a greeting." doesn't help locate the code. When the record still
     // has unchanged members to anchor from, the warning should name the

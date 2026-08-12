@@ -105,6 +105,7 @@ export interface DocumentationService {
   ): { recordId: string; record: DocRecord };
   discardArchivedRecord(repoPath: string, archiveId: string): void;
   checkFile(repoPath: string, relativePath: string): CheckFileReport;
+  generateMessages(repoPath: string, relativePath: string, report: CheckFileReport): RapidDocsMessage[];
   findDocumentedNodes(repoPath: string, relativePath: string): { recordId: string; start: number; end: number }[];
 }
 

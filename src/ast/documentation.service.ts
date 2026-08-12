@@ -715,6 +715,11 @@ export class DocumentationService {
 
     const currentHashes = new Set<string>();
     const hashedNodes: (UndocumentedNode & { hash: string; isLeaf: boolean })[] = [];
+    // Shared across every record's anchor resolution below (mutated as each
+    // one claims its own positions) -- see that pass's own comment for why
+    // a single, depleting pool, not each record filtering the whole file
+    // independently, is what makes cross-record disambiguation possible.
+    const positionsByHash = new Map<string, { start: number; end: number }[]>();
 
     for (const entry of allNodes.values()) {
       const hash = this.astService.hashNode(entry.node);
@@ -722,11 +727,14 @@ export class DocumentationService {
       const name = this.astService.extractName(entry.node);
       const isLeaf = isLeafNode(entry.node, entry.type);
       hashedNodes.push({ type: entry.type, start: entry.start, end: entry.end, loc: entry.loc, name, hash, isLeaf });
+      const positions = positionsByHash.get(hash) ?? [];
+      positions.push({ start: entry.start, end: entry.end });
+      positionsByHash.set(hash, positions);
     }
 
     const storage = this.loadStorage(repoPath, relativePath);
     const documentedHashes = new Set<string>();
-    const driftResults: DriftResult[] = [];
+    const recordStatuses: { recordId: string; record: DocRecord; status: DriftResult["status"]; changedMembers: RecordMember[] }[] = [];
 
     for (const [recordId, record] of Object.entries(storage.records)) {
       for (const member of record.members) {
@@ -785,47 +793,95 @@ export class DocumentationService {
         status = "partially_stale";
       }
 
-      // Find a current, human-locatable name for this record: the smallest
-      // CURRENT node that still fully contains whatever members DIDN'T
-      // change (their current positions are the one reliable anchor left,
-      // since the record itself carries no position info, only hashes).
-      // Nothing to anchor from at all for a fully-stale record -- every
-      // member changed, so this stays null in that case. Anchors are
-      // restricted to COMPOUND nodes for the same reason undocumented-node
-      // detection is below: an unchanged leaf (e.g. a reused identifier like
-      // a function's own name also appearing at an unrelated call site
-      // elsewhere in the file) is not reliable evidence of where this
-      // record's content actually still lives, and including it would
-      // stretch the bounding box out to that unrelated location, past any
-      // container that could otherwise be named.
-      const unchangedHashesForRecord = new Set(
-        record.members.map((member) => member.hash).filter((hash) => currentHashes.has(hash))
+      recordStatuses.push({ recordId, record, status, changedMembers });
+    }
+
+    // Anchor resolution: a SEPARATE pass, ordered from the most-intact
+    // record to the least (fewest changed members first) and sharing ONE
+    // depleting position pool across every record, not each one filtering
+    // the whole file independently. Real bug this fixes: two documented
+    // functions differing only by name (e.g. copy-pasted, then renamed)
+    // have IDENTICAL params/body, so a per-record filter can't tell "my own
+    // surviving node" apart from the sibling's merely-identical one, and
+    // leaked the sibling's ranges into the renamed record's own
+    // matchingRanges. Resolving the more-intact record FIRST and removing
+    // its claimed positions from the shared pool means the more-ambiguous
+    // record (the renamed one) is only left with its own real occurrence by
+    // the time its turn comes -- the same "claim the unambiguous ones, grow
+    // toward what's already claimed" strategy chooseBoundingBoxPositions
+    // already uses within one record, just extended across records instead
+    // of restarting fresh, independently, for each one. Anchors stay
+    // restricted to COMPOUND members for the same reason undocumented-node
+    // detection below is: an unchanged leaf (a reused identifier, say) is
+    // not reliable evidence of where a record's content actually lives.
+    const anchorsByRecordId = new Map<string, { name: string | null; matchingRanges: { start: number; end: number }[] }>();
+    const resolutionOrder = [...recordStatuses].sort((a, b) => a.changedMembers.length - b.changedMembers.length);
+
+    for (const { recordId, record } of resolutionOrder) {
+      const survivingCompoundMembers = record.members.filter(
+        (member) => currentHashes.has(member.hash) && !(member.isLeaf ?? ATOMIC_LEAF_TYPES.has(member.type))
       );
 
-      let name: string | null = null;
-      const anchors = hashedNodes.filter((node) => unchangedHashesForRecord.has(node.hash) && !node.isLeaf);
-      if (anchors.length > 0) {
-        const minStart = Math.min(...anchors.map((node) => node.start));
-        const maxEnd = Math.max(...anchors.map((node) => node.end));
-
-        const containers = hashedNodes
-          .filter((node) => node.name !== null && node.start <= minStart && maxEnd <= node.end)
-          .sort((a, b) => a.end - a.start - (b.end - b.start));
-
-        name = containers[0]?.name ?? null;
+      if (survivingCompoundMembers.length === 0) {
+        anchorsByRecordId.set(recordId, { name: null, matchingRanges: [] });
+        continue;
       }
 
-      const matchingRanges = anchors.map((node) => ({ start: node.start, end: node.end }));
+      // Refuse to guess when NOTHING about this record is unambiguous even
+      // before growing a box outward -- chooseBoundingBoxPositions's own
+      // fallback for that case (grab every current position of every
+      // member) is only safe for findDocumentedNodes, which re-verifies the
+      // exact combined hash afterward and silently drops a wrong guess; a
+      // Problems warning has no equivalent verification step, so a
+      // genuinely unanchored record must stay unanchored rather than risk
+      // pointing at the wrong function entirely. Real case this covers:
+      // TWO twins renamed at once (not just one) -- neither has a still-
+      // unique name left to seed from, since the untouched twin that made
+      // the single-rename case resolvable no longer exists.
+      const neededByHash = new Map<string, number>();
+      for (const member of survivingCompoundMembers) {
+        neededByHash.set(member.hash, (neededByHash.get(member.hash) ?? 0) + 1);
+      }
+      const hasUnambiguousSeed = [...neededByHash].some(
+        ([hash, needed]) => (positionsByHash.get(hash)?.length ?? 0) === needed
+      );
 
-      driftResults.push({
+      if (!hasUnambiguousSeed) {
+        anchorsByRecordId.set(recordId, { name: null, matchingRanges: [] });
+        continue;
+      }
+
+      const chosenPositions = this.chooseBoundingBoxPositions(survivingCompoundMembers, positionsByHash);
+      const claimed = new Set(chosenPositions);
+      for (const [hash, positions] of positionsByHash) {
+        if (positions.some((position) => claimed.has(position))) {
+          positionsByHash.set(
+            hash,
+            positions.filter((position) => !claimed.has(position))
+          );
+        }
+      }
+
+      const minStart = Math.min(...chosenPositions.map((p) => p.start));
+      const maxEnd = Math.max(...chosenPositions.map((p) => p.end));
+      const containers = hashedNodes
+        .filter((node) => node.name !== null && node.start <= minStart && maxEnd <= node.end)
+        .sort((a, b) => a.end - a.start - (b.end - b.start));
+
+      anchorsByRecordId.set(recordId, { name: containers[0]?.name ?? null, matchingRanges: chosenPositions });
+    }
+
+    const driftResults: DriftResult[] = recordStatuses.map(({ recordId, record, status, changedMembers }) => {
+      const { name, matchingRanges } = anchorsByRecordId.get(recordId)!;
+      return {
         recordId,
         status,
         totalMembers: record.members.length,
         changedMembers,
         name,
         matchingRanges,
-      });
-    }
+      };
+    });
 
     const undocumentedCandidates = hashedNodes.filter((node) => !documentedHashes.has(node.hash));
 

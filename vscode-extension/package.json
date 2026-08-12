@@ -67,6 +67,10 @@
       {
         "command": "rapidDocs.showEditorActions",
         "title": "rapid-docs: Actions..."
+      },
+      {
+        "command": "rapidDocs.deleteStaleRecordFromDiagnostic",
+        "title": "rapid-docs: Delete stale documentation"
       }
     ],
     "menus": {
@@ -92,11 +96,6 @@
         {
           "id": "rapidDocsDocumentedSections",
           "name": "Documented Sections",
-          "type": "webview"
-        },
-        {
-          "id": "rapidDocsProblems",
-          "name": "Problems",
           "type": "webview"
         }
       ]

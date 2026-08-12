@@ -90,10 +90,6 @@ async function applyMessagesToDiagnostics(
   }
 }
 
-export interface ProblemsMessagesSink {
-  setAllMessages(messages: RapidDocsMessage[]): void;
-}
-
 // Matches electron/main.ts's activateRepo() exactly (main.ts:491-517): run
 // sync() (catches up committed history since the last sync pointer) THEN
 // reconcile() (catches up uncommitted drift), dedupe the combined result,
@@ -103,32 +99,16 @@ export interface ProblemsMessagesSink {
 // testLiveWatch) -- a real user opening the extension got neither an
 // initial Problems-panel populate nor any live updates at all until they
 // happened to run one of those test commands themselves.
-//
-// Also maintains a full, repo-wide messagesByFile map (matching electron/
-// main.ts's own messagesByFile/replaceFileMessages, main.ts:39,503) --
-// the native DiagnosticCollection only ever needs the CHANGED files per
-// event, but the Problems webview (7.1 rebuild) needs the CURRENT, complete
-// picture across the whole repo, same as electron's own latestMessages did.
 export async function activateDiagnosticsLiveWiring(
   context: vscode.ExtensionContext,
   diagnosticCollection: vscode.DiagnosticCollection,
   syncService: SyncService,
   liveWatchService: LiveWatchService,
-  problemsSink: ProblemsMessagesSink
+  onFilesChanged?: (relativePaths: string[]) => void
 ): Promise<void> {
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (!folder) return;
   const repoPath = folder.uri.fsPath;
-
-  const messagesByFile = new Map<string, RapidDocsMessage[]>();
-  function replaceFileMessages(relativePaths: string[], messages: RapidDocsMessage[]): void {
-    for (const relativePath of relativePaths) {
-      const forThisFile = messages.filter((m) => m.relativePath === relativePath);
-      if (forThisFile.length > 0) messagesByFile.set(relativePath, forThisFile);
-      else messagesByFile.delete(relativePath);
-    }
-    problemsSink.setAllMessages(Array.from(messagesByFile.values()).flat());
-  }
 
   const syncReport = syncService.sync(repoPath);
   const reconcileReport = syncService.reconcile(repoPath);
@@ -139,7 +119,6 @@ export async function activateDiagnosticsLiveWiring(
   for (const [relativePath, diagnostics] of byFile) {
     diagnosticCollection.set(vscode.Uri.file(join(repoPath, relativePath)), diagnostics);
   }
-  replaceFileMessages([...new Set(catchUpMessages.map((m) => m.relativePath))], catchUpMessages);
 
   // start() doesn't guard against an already-running watcher itself (see
   // live-watch.service.ts's own start() comment: calling it twice silently
@@ -149,9 +128,19 @@ export async function activateDiagnosticsLiveWiring(
   await liveWatchService.stop();
   await liveWatchService.start(repoPath);
 
+  // Matches electron/renderer.js's own onFilesChanged handler (renderer.js:
+  // 1248-1259) -- onLiveMessages alone only ever updated Problems/Dashboard/
+  // Archive/the file tree there, never the currently-open file's own
+  // Documented Sections; a SEPARATE listener re-opens the current file
+  // (cascading into refreshDocumentedSections) specifically because a live
+  // edit to the file you're already looking at (e.g. a rename) is a real,
+  // deliberate signal that whatever's shown for THAT file needs recomputing,
+  // not just its Problems entries. relativePaths already carries exactly
+  // this signal (every file this batch is the current, complete state for);
+  // it just never reached anything but diagnostics before this.
   const listener = (relativePaths: string[], messages: RapidDocsMessage[]) => {
     void applyMessagesToDiagnostics(diagnosticCollection, repoPath, relativePaths, messages);
-    replaceFileMessages(relativePaths, messages);
+    onFilesChanged?.(relativePaths);
   };
   liveWatchService.on("messages", listener);
   context.subscriptions.push({ dispose: () => liveWatchService.off("messages", listener) });
