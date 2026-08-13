@@ -242,7 +242,14 @@ export class SyncService {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       return [
-        { severity: "error", text: `Could not check "${relativePath}": ${reason}`, relativePath, recordId: null, ranges: [] },
+        {
+          severity: "error",
+          text: `Could not check "${relativePath}": ${reason}`,
+          relativePath,
+          recordId: null,
+          ranges: [],
+          collidesWith: [],
+        },
       ];
     }
   }

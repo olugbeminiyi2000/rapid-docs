@@ -5,3 +5,4 @@ function division(a: number, b: number): number {
 function divisor(a: number, b: number): number {
   return a / b;
 }
+

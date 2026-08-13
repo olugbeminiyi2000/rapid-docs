@@ -8,6 +8,7 @@ import { createHighlightController } from "./highlighting/highlightController";
 import { DocumentedSectionsViewProvider } from "./webviews/documentedSections/documentedSectionsViewProvider";
 import { registerDiagnosticPositionHighlight } from "./editor-interactions/diagnosticPositionHighlight";
 import { registerDeleteStaleDocumentationProvider } from "./editor-interactions/deleteStaleDocumentationProvider";
+import { registerDocTextPreview } from "./webviews/shared/docTextPreview";
 import { createActiveEditorTracker } from "./editor-interactions/activeEditorTracker";
 import { registerComposeCommands } from "./webviews/compose/registerComposeCommands";
 import { registerEditorContextMenu } from "./editor-interactions/registerEditorContextMenu";
@@ -52,10 +53,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const highlightController = createHighlightController(context);
   const activeEditorTracker = createActiveEditorTracker(context);
 
+  // Real user feedback (2026-08-12): docText can be long and multi-line,
+  // and neither a truncated Documented Sections row nor a one-line
+  // QuickPick label can show that -- one shared preview mechanism (a real,
+  // read-only Markdown-rendered tab via VSCode's own built-in Markdown
+  // Preview) used everywhere docText is shown short, not a custom viewer.
+  const docTextPreview = registerDocTextPreview(context);
+
   // Section 7.2: Documented Sections rebuilt as a Webview (not a TreeView --
   // see PARITY-CHECKLIST.md's 2026-08-11 decision). File-scoped, same as the
   // Electron panel was, so it refreshes whenever the active file changes.
-  const documentedSectionsProvider = new DocumentedSectionsViewProvider(backend.documentationService, highlightController, activeEditorTracker);
+  const documentedSectionsProvider = new DocumentedSectionsViewProvider(context, backend.documentationService, highlightController, activeEditorTracker, docTextPreview);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(DocumentedSectionsViewProvider.viewId, documentedSectionsProvider)
   );
@@ -83,7 +91,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 7.6: native Quick Fix for deleting a stale (warning or error) record --
   // see deleteStaleDocumentationProvider.ts's own header for why this
   // covers both severities, not just error/fully-stale as first scoped.
-  registerDeleteStaleDocumentationProvider(context, backend.documentationService, () => documentedSectionsProvider.refresh());
+  registerDeleteStaleDocumentationProvider(context, backend.documentationService, () => documentedSectionsProvider.refresh(), docTextPreview);
 
   // Section 7.3: Compose, a real WebviewPanel opened beside the editor
   // (not docked in the sidebar) per the 2026-08-11 decision, so code and
@@ -106,7 +114,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   registerEditorContextMenu(context, {
     documentationService: backend.documentationService,
     activeEditorTracker,
-    documentedSectionsProvider,
     highlightController,
     refreshDocumentedSections: () => documentedSectionsProvider.refresh(),
   });

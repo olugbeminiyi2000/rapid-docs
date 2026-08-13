@@ -94,6 +94,17 @@ export interface DriftResult {
   // can do here is add one small, separate, isolated decoration -- never
   // swallow unrelated code in between.
   matchingRanges: { start: number; end: number }[];
+  // Every current, named container whose content this record's surviving
+  // members ALSO equally match, name AND full position -- populated only
+  // when matchingRanges came back empty specifically because of a genuine
+  // tie (two or more real candidates, not because nothing survived at
+  // all). The position is the container's own full span (not just the
+  // tied member's tiny span) so a UI can navigate/highlight the whole
+  // colliding function, not one fragment of it. Lets a UI explain WHY a
+  // location couldn't be found, and jump straight to each real candidate,
+  // instead of leaving a user to discover either only by reading raw
+  // storage JSON.
+  collidesWith: { name: string; start: number; end: number }[];
 }
 
 export interface UndocumentedNode {
@@ -144,6 +155,12 @@ export interface Message {
   // a message that was never about a specific position at all (a parse
   // failure, a deleted-file notice).
   ranges: { start: number; end: number }[];
+  // Every current, named location this message's subject collides with --
+  // populated only when ranges came back empty specifically because of a
+  // genuine tie (see DriftResult.collidesWith). Lets a UI (e.g. a VSCode
+  // DiagnosticRelatedInformation list) point directly at each real
+  // candidate, not just say a collision exists.
+  collidesWith: { name: string; start: number; end: number }[];
 }
 
 export interface ArchivedRecord {
@@ -477,6 +494,7 @@ export class DocumentationService {
         relativePath,
         recordId: null,
         ranges: [],
+        collidesWith: [],
       });
     }
 
@@ -814,8 +832,31 @@ export class DocumentationService {
     // restricted to COMPOUND members for the same reason undocumented-node
     // detection below is: an unchanged leaf (a reused identifier, say) is
     // not reliable evidence of where a record's content actually lives.
-    const anchorsByRecordId = new Map<string, { name: string | null; matchingRanges: { start: number; end: number }[] }>();
+    const anchorsByRecordId = new Map<
+      string,
+      {
+        name: string | null;
+        matchingRanges: { start: number; end: number }[];
+        collidesWith: { name: string; start: number; end: number }[];
+      }
+    >();
     const resolutionOrder = [...recordStatuses].sort((a, b) => a.changedMembers.length - b.changedMembers.length);
+
+    // Finds the smallest current, NAMED container around one specific
+    // position -- same "smallest container fully containing it" rule the
+    // regular name-derivation below uses, just applied to a single point
+    // instead of a merged min/max range, so a genuine collision can be
+    // explained by name AND position ("division" at [12,45]) instead of
+    // raw offsets alone. Returns the container's own full span, not the
+    // tied member's tiny one, so a UI can navigate to/highlight the whole
+    // colliding function.
+    const findContainer = (position: { start: number; end: number }): { name: string; start: number; end: number } | null => {
+      const containers = hashedNodes
+        .filter((node) => node.name !== null && node.start <= position.start && position.end <= node.end)
+        .sort((a, b) => a.end - a.start - (b.end - b.start));
+      const match = containers[0];
+      return match ? { name: match.name!, start: match.start, end: match.end } : null;
+    };
 
     for (const { recordId, record } of resolutionOrder) {
       const survivingCompoundMembers = record.members.filter(
@@ -823,7 +864,7 @@ export class DocumentationService {
       );
 
       if (survivingCompoundMembers.length === 0) {
-        anchorsByRecordId.set(recordId, { name: null, matchingRanges: [] });
+        anchorsByRecordId.set(recordId, { name: null, matchingRanges: [], collidesWith: [] });
         continue;
       }
 
@@ -847,7 +888,22 @@ export class DocumentationService {
       );
 
       if (!hasUnambiguousSeed) {
-        anchorsByRecordId.set(recordId, { name: null, matchingRanges: [] });
+        // Real, user-requested behavior (2026-08-12): don't just stay
+        // silent about why -- name (and locate) every current container
+        // this record's surviving content equally matches, so a UI can
+        // explain the collision AND jump straight to each real candidate,
+        // instead of leaving a user to discover either only by reading raw
+        // storage JSON. Deduplicated by name (a Map, not a Set of objects)
+        // since the same container is reachable via more than one tied
+        // member -- one entry per real candidate location, not one per hash.
+        const collidesWith = new Map<string, { name: string; start: number; end: number }>();
+        for (const member of survivingCompoundMembers) {
+          for (const position of positionsByHash.get(member.hash) ?? []) {
+            const container = findContainer(position);
+            if (container !== null) collidesWith.set(container.name, container);
+          }
+        }
+        anchorsByRecordId.set(recordId, { name: null, matchingRanges: [], collidesWith: [...collidesWith.values()] });
         continue;
       }
 
@@ -868,11 +924,11 @@ export class DocumentationService {
         .filter((node) => node.name !== null && node.start <= minStart && maxEnd <= node.end)
         .sort((a, b) => a.end - a.start - (b.end - b.start));
 
-      anchorsByRecordId.set(recordId, { name: containers[0]?.name ?? null, matchingRanges: chosenPositions });
+      anchorsByRecordId.set(recordId, { name: containers[0]?.name ?? null, matchingRanges: chosenPositions, collidesWith: [] });
     }
 
     const driftResults: DriftResult[] = recordStatuses.map(({ recordId, record, status, changedMembers }) => {
-      const { name, matchingRanges } = anchorsByRecordId.get(recordId)!;
+      const { name, matchingRanges, collidesWith } = anchorsByRecordId.get(recordId)!;
       return {
         recordId,
         status,
@@ -880,6 +936,7 @@ export class DocumentationService {
         changedMembers,
         name,
         matchingRanges,
+        collidesWith,
       };
     });
 
@@ -926,6 +983,7 @@ export class DocumentationService {
           relativePath,
           recordId: drift.recordId,
           ranges: [],
+          collidesWith: [],
         });
       } else if (drift.status === "partially_stale") {
         const distinctTypes = [...new Set(drift.changedMembers.map((member) => member.type))];
@@ -940,12 +998,27 @@ export class DocumentationService {
         // no name is derivable (an anonymous/unnamed piece of code).
         const subject = drift.name ? `"${drift.name}"` : quoted;
 
+        // Real, user-requested behavior (2026-08-12): an empty
+        // matchingRanges because of a genuine collision (drift.collidesWith
+        // populated) is a fundamentally different situation from one
+        // that's just missing a name -- staying silent about WHY forces
+        // reading raw storage JSON to find out. Naming exactly what it
+        // collides with, and pointing at the real resolution mechanism
+        // (the "Delete stale documentation" Quick Fix, the only thing that
+        // can actually reach a record in this state), turns a dead end
+        // into an actionable next step.
+        const collisionText =
+          drift.collidesWith.length > 0
+            ? ` Its location is ambiguous: it matches the same structure as ${drift.collidesWith.map((c) => `"${c.name}"`).join(", ")}. Use "Delete stale documentation" to remove this record and redocument, or to remove all but the one you want to keep.`
+            : "";
+
         messages.push({
           severity: "warning",
-          text: `${subject} is partially out of date — ${drift.changedMembers.length} of ${drift.totalMembers} parts changed (${typesText}), but the rest is still accurate. Review and update if needed.`,
+          text: `${subject} is partially out of date — ${drift.changedMembers.length} of ${drift.totalMembers} parts changed (${typesText}), but the rest is still accurate. Review and update if needed.${collisionText}`,
           relativePath,
           recordId: drift.recordId,
           ranges: drift.matchingRanges,
+          collidesWith: drift.collidesWith,
         });
       }
     }
@@ -965,6 +1038,7 @@ export class DocumentationService {
         relativePath,
         recordId: null,
         ranges: [{ start: node.start, end: node.end }],
+        collidesWith: [],
       });
     }
 

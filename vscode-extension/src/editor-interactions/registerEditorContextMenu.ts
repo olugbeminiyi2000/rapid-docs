@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
 import type { DocumentationService } from "../types";
-import type { DocumentedSectionsViewProvider } from "../webviews/documentedSections/documentedSectionsViewProvider";
 import { ComposePanel } from "../webviews/compose/composePanel";
 import type { HighlightController } from "../highlighting/highlightController";
 import type { ActiveEditorTracker } from "./activeEditorTracker";
@@ -8,7 +7,6 @@ import type { ActiveEditorTracker } from "./activeEditorTracker";
 export interface EditorContextMenuDeps {
   documentationService: DocumentationService;
   activeEditorTracker: ActiveEditorTracker;
-  documentedSectionsProvider: DocumentedSectionsViewProvider;
   highlightController: HighlightController;
   refreshDocumentedSections: () => Promise<void>;
 }
@@ -73,7 +71,21 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
       if (matchingRecord) {
         items.push({
           label: "Edit documentation",
-          run: () => deps.documentedSectionsProvider.beginEditFromContextMenu(matchingRecord.recordId),
+          // Opens the same spacious Compose panel writing new docs already
+          // uses, pre-filled with the existing text -- replaces the old
+          // redirect into Documented Sections' own (now-removed) inline
+          // <input> edit, a cramped, bad fit for anything long or
+          // multi-line. No DOM to reuse anymore; this IS the real surface.
+          run: () => {
+            const panel = ComposePanel.openOrReveal(
+              context,
+              deps.documentationService,
+              deps.highlightController,
+              deps.refreshDocumentedSections,
+              deps.activeEditorTracker
+            );
+            panel.beginEditRecord(matchingRecord.recordId, relativePath, matchingRecord.docText);
+          },
         });
         items.push({
           label: "Delete documentation",

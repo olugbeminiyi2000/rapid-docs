@@ -664,6 +664,108 @@ const x = 10;
       expect(betaDrift!.matchingRanges).toEqual([]);
     });
 
+    // Phase A of a real, user-proposed design (2026-08-12): silently
+    // leaving matchingRanges empty is honest, but tells a user nothing --
+    // finding out why requires reading raw storage JSON, which "not
+    // everyone wants to" do. When emptiness is specifically because of a
+    // genuine collision (not because nothing survived at all), the message
+    // should say so, name what it collides with, and point at the actual
+    // resolution mechanism (the "Delete stale documentation" Quick Fix)
+    // rather than leaving the user to guess what to do next.
+    it("explains a genuine collision by name in the warning text, rather than staying silent about why the location is unknown", () => {
+      const twinCode = `function alpha(a, b) {\n  return a + b;\n}\n\nfunction beta(a, b) {\n  return a + b;\n}\n`;
+      writeFileSync(join(repoPath, relativePath), twinCode);
+
+      const alphaStart = 0;
+      const alphaEnd = twinCode.indexOf("\n\nfunction beta") + 1;
+      const betaStart = twinCode.indexOf("function beta");
+      const betaEnd = twinCode.length;
+
+      docService.writeDoc(repoPath, relativePath, alphaStart, alphaEnd, "documents alpha");
+      const { recordId: betaRecordId } = docService.writeDoc(repoPath, relativePath, betaStart, betaEnd, "documents beta");
+
+      const bothRenamedCode = twinCode.replace("function alpha(", "function alphaRenamed(").replace("function beta(", "function betaRenamed(");
+      writeFileSync(join(repoPath, relativePath), bothRenamedCode);
+
+      const report = docService.checkFile(repoPath, relativePath);
+      const messages = docService.generateMessages(repoPath, relativePath, report);
+      const betaMessage = messages.find((m) => m.recordId === betaRecordId);
+
+      expect(betaMessage?.text).toContain("alphaRenamed");
+      expect(betaMessage?.text).toContain("betaRenamed");
+      expect(betaMessage?.text).toContain("Delete stale documentation");
+    });
+
+    // Real distinction found via manual testing (2026-08-12): deleting a
+    // colliding sibling's record, by itself, does NOT resolve the
+    // survivor's own ambiguity -- the collision is rooted in the actual
+    // source code being structurally identical, not in competing records
+    // existing, and deleting a record never touches the code. Confirmed
+    // directly: matchingRanges/findStaleRecordForSelection stay exactly as
+    // ambiguous after a plain delete as before it.
+    it("deleting one of two colliding records does NOT, by itself, resolve the survivor's ambiguity", () => {
+      const twinCode = `function alpha(a, b) {\n  return a + b;\n}\n\nfunction beta(a, b) {\n  return a + b;\n}\n`;
+      writeFileSync(join(repoPath, relativePath), twinCode);
+
+      const alphaStart = 0;
+      const alphaEnd = twinCode.indexOf("\n\nfunction beta") + 1;
+      const betaStart = twinCode.indexOf("function beta");
+      const betaEnd = twinCode.length;
+
+      const { recordId: alphaRecordId } = docService.writeDoc(repoPath, relativePath, alphaStart, alphaEnd, "documents alpha");
+      const { recordId: betaRecordId } = docService.writeDoc(repoPath, relativePath, betaStart, betaEnd, "documents beta");
+
+      const bothRenamedCode = twinCode.replace("function alpha(", "function alphaRenamed(").replace("function beta(", "function betaRenamed(");
+      writeFileSync(join(repoPath, relativePath), bothRenamedCode);
+
+      docService.deleteRecord(repoPath, relativePath, alphaRecordId);
+
+      const after = docService.checkFile(repoPath, relativePath);
+      const betaDriftAfter = after.driftResults.find((d) => d.recordId === betaRecordId);
+      expect(betaDriftAfter?.matchingRanges).toEqual([]);
+
+      const betaRenamedStart = bothRenamedCode.indexOf("function betaRenamed");
+      const betaRenamedEnd = bothRenamedCode.length;
+      expect(docService.findStaleRecordForSelection(repoPath, relativePath, betaRenamedStart, betaRenamedEnd)).toBeNull();
+    });
+
+    // The real trigger, confirmed directly: freshly documenting ONE
+    // colliding twin (not deleting a sibling) is what can resolve the
+    // OTHER, still-ambiguous sibling -- the fresh record is a perfect,
+    // unambiguous match for its own current code, so the shared-pool
+    // resolution (most-intact record first) claims its position and
+    // removes it from the pool, leaving the untouched sibling's old
+    // record with only one remaining place its shared structure could be.
+    it("freshly documenting one colliding twin can resolve the OTHER, still-ambiguous sibling's own old record", () => {
+      const twinCode = `function alpha(a, b) {\n  return a + b;\n}\n\nfunction beta(a, b) {\n  return a + b;\n}\n`;
+      writeFileSync(join(repoPath, relativePath), twinCode);
+
+      const alphaStart = 0;
+      const alphaEnd = twinCode.indexOf("\n\nfunction beta") + 1;
+      const betaStart = twinCode.indexOf("function beta");
+      const betaEnd = twinCode.length;
+
+      const { recordId: alphaRecordId } = docService.writeDoc(repoPath, relativePath, alphaStart, alphaEnd, "documents alpha");
+      const { recordId: betaRecordId } = docService.writeDoc(repoPath, relativePath, betaStart, betaEnd, "documents beta");
+
+      const bothRenamedCode = twinCode.replace("function alpha(", "function alphaRenamed(").replace("function beta(", "function betaRenamed(");
+      writeFileSync(join(repoPath, relativePath), bothRenamedCode);
+
+      docService.deleteRecord(repoPath, relativePath, alphaRecordId);
+
+      const alphaRenamedStart = bothRenamedCode.indexOf("function alphaRenamed");
+      const alphaRenamedEnd = bothRenamedCode.indexOf("\n\nfunction betaRenamed") + 1;
+      docService.writeDoc(repoPath, relativePath, alphaRenamedStart, alphaRenamedEnd, "documents alphaRenamed, fresh");
+
+      const after = docService.checkFile(repoPath, relativePath);
+      const betaDriftAfter = after.driftResults.find((d) => d.recordId === betaRecordId);
+      expect(betaDriftAfter?.matchingRanges.length).toBeGreaterThan(0);
+
+      const betaRenamedStart = bothRenamedCode.indexOf("function betaRenamed");
+      const betaRenamedEnd = bothRenamedCode.length;
+      expect(docService.findStaleRecordForSelection(repoPath, relativePath, betaRenamedStart, betaRenamedEnd)?.recordId).toBe(betaRecordId);
+    });
+
     // Real user feedback: a docText-quote subject like "greet() builds and
     // logs a greeting." doesn't help locate the code. When the record still
     // has unchanged members to anchor from, the warning should name the

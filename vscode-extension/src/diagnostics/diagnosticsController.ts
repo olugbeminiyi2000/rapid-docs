@@ -40,6 +40,27 @@ export async function messagesToDiagnosticsByFile(
           : new vscode.Range(0, 0, 0, 0);
       const diagnostic = new vscode.Diagnostic(range, message.text, SEVERITY_MAP[message.severity]);
       diagnostic.source = "rapid-docs";
+
+      // Native mechanism for exactly this: a collision explanation could
+      // list any number of colliding locations, and cramming them into the
+      // one-line message doesn't scale (real user feedback). Shown as an
+      // expandable, clickable sub-list in the native Problems panel --
+      // collapsed by default, so it never clutters the main line, and each
+      // entry jumps straight to that real candidate's own full span (not
+      // just naming it in prose) when clicked.
+      if (message.collidesWith.length > 0) {
+        diagnostic.relatedInformation = message.collidesWith.map(
+          (collision) =>
+            new vscode.DiagnosticRelatedInformation(
+              new vscode.Location(
+                uri,
+                new vscode.Range(document.positionAt(collision.start), document.positionAt(collision.end))
+              ),
+              collision.name
+            )
+        );
+      }
+
       return diagnostic;
     });
     result.set(relativePath, diagnostics);

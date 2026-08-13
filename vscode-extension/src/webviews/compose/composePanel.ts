@@ -16,6 +16,19 @@ interface PendingDriftUpdate {
   relativePath: string;
 }
 
+// Set only by "Edit documentation" (the context menu's matching-record
+// branch, and Documented Sections' own row edit button) -- redirects the
+// NEXT compose submission to editDocText (change an EXISTING record's text
+// only, no code-matching hashes touched at all) instead of writeDoc/
+// updateDriftedDoc. Real UX gap this replaces: editing used to swap a
+// Documented Sections row for a tiny single-line <input>, a bad fit for
+// anything long or multi-line -- the same problem this whole session's
+// docText-preview work was about, just for WRITING instead of reading.
+interface PendingEditRecord {
+  recordId: string;
+  relativePath: string;
+}
+
 type FromWebviewMessage = { type: "submit"; text: string };
 
 const STYLE = `
@@ -33,6 +46,7 @@ export class ComposePanel {
   private static instance: ComposePanel | null = null;
   private readonly panel: vscode.WebviewPanel;
   private pendingDriftUpdate: PendingDriftUpdate | null = null;
+  private pendingEditRecord: PendingEditRecord | null = null;
 
   private constructor(
     context: vscode.ExtensionContext,
@@ -79,13 +93,28 @@ export class ComposePanel {
   }
 
   beginDriftUpdate(oldRecordId: string, relativePath: string, existingDocText: string): void {
+    this.pendingEditRecord = null;
     this.pendingDriftUpdate = { oldRecordId, relativePath };
     void this.panel.webview.postMessage({ type: "beginDriftUpdate", docText: existingDocText });
   }
 
-  private clearDriftUpdateMode(): void {
+  // Replaces Documented Sections' own inline <input> edit entirely (real
+  // UX gap: cramped, a bad fit for anything long or multi-line -- the same
+  // "long content deserves a real surface" theme as this session's
+  // docText-preview work). Reuses this exact same panel/tab rather than
+  // any separate editing UI. Doesn't need a code selection at all -- unlike
+  // writeDoc/updateDriftedDoc, editDocText only ever changes the stored
+  // text, never the code-matching hashes.
+  beginEditRecord(recordId: string, relativePath: string, existingDocText: string): void {
     this.pendingDriftUpdate = null;
-    void this.panel.webview.postMessage({ type: "clearDriftUpdateMode" });
+    this.pendingEditRecord = { recordId, relativePath };
+    void this.panel.webview.postMessage({ type: "beginEditRecord", docText: existingDocText });
+  }
+
+  private clearPendingModes(): void {
+    this.pendingDriftUpdate = null;
+    this.pendingEditRecord = null;
+    void this.panel.webview.postMessage({ type: "clearPendingModes" });
   }
 
   // Real bug found via manual testing: opening Compose "fresh" for a
@@ -95,11 +124,12 @@ export class ComposePanel {
   // Documentation", old text still in the textarea) from an earlier,
   // unrelated action, it kept showing that stale state indefinitely, even
   // though the actual submit logic was already correctly routed to writeDoc,
-  // not updateDriftedDoc. Unlike clearDriftUpdateMode (label only), this
-  // also clears the textarea and any leftover status message -- a genuinely
+  // not updateDriftedDoc. Unlike clearPendingModes (label only), this also
+  // clears the textarea and any leftover status message -- a genuinely
   // fresh start, not just a relabeled button.
   resetToFresh(): void {
     this.pendingDriftUpdate = null;
+    this.pendingEditRecord = null;
     void this.panel.webview.postMessage({ type: "resetFresh" });
   }
 
@@ -129,7 +159,11 @@ export class ComposePanel {
             textEl.value = message.docText;
             buttonEl.textContent = 'Update Documentation';
             textEl.focus();
-          } else if (message.type === 'clearDriftUpdateMode') {
+          } else if (message.type === 'beginEditRecord') {
+            textEl.value = message.docText;
+            buttonEl.textContent = 'Save Changes';
+            textEl.focus();
+          } else if (message.type === 'clearPendingModes') {
             buttonEl.textContent = 'Document Selection';
           } else if (message.type === 'resetFresh') {
             if (statusClearTimeout) clearTimeout(statusClearTimeout);
@@ -162,6 +196,46 @@ export class ComposePanel {
   private async handleMessage(message: FromWebviewMessage): Promise<void> {
     if (message.type !== "submit") return;
 
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const status = (text: string, severity: "hint" | "error" | "success") =>
+      void this.panel.webview.postMessage({ type: "submitResult", text, severity });
+
+    if (!folder) {
+      status("Open a folder first.", "hint");
+      return;
+    }
+    const repoPath = folder.uri.fsPath;
+
+    // One-shot, mutually exclusive: whichever pending mode is active gets
+    // consumed right here, regardless of outcome, so a later, unrelated
+    // submission can never accidentally be redirected into finishing
+    // something it was never actually about. Matches electron/renderer.js's
+    // own reasoning for pendingDriftUpdate (renderer.js:954-959), extended
+    // to the same one-shot treatment for editRecord.
+    const editRecord = this.pendingEditRecord;
+    const driftUpdate = this.pendingDriftUpdate;
+    this.clearPendingModes();
+
+    if (!message.text.trim()) {
+      status("Enter some documentation text first.", "hint");
+      return;
+    }
+
+    // editDocText doesn't need a code selection at all -- unlike
+    // writeDoc/updateDriftedDoc, it only ever changes the stored text,
+    // never the code-matching hashes -- so this branch never touches
+    // activeEditorTracker/the editor at all.
+    if (editRecord) {
+      try {
+        this.documentationService.editDocText(repoPath, editRecord.relativePath, editRecord.recordId, message.text);
+        status(`Updated. (${editRecord.relativePath})`, "success");
+        await this.refreshDocumentedSections();
+      } catch (err) {
+        status(`${err instanceof Error ? err.message : String(err)} (${editRecord.relativePath})`, "error");
+      }
+      return;
+    }
+
     // NOT vscode.window.activeTextEditor -- clicking anything inside this
     // panel (a webview, not a text editor) shifts VSCode's own focus away
     // from the source file, so by the time this message handler runs,
@@ -171,33 +245,17 @@ export class ComposePanel {
     // TextEditor object stays valid and its .selection stays live-accurate
     // even after it stops being VSCode's "active" one.
     const editor = this.activeEditorTracker.getEditor();
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    const status = (text: string, severity: "hint" | "error" | "success") =>
-      void this.panel.webview.postMessage({ type: "submitResult", text, severity });
-
-    if (!editor || !folder) {
+    if (!editor) {
       status("Open a file first.", "hint");
       return;
     }
-    // One-shot: whatever the outcome, this specific pending update is
-    // consumed right here, so a later, unrelated "Document Selection"
-    // submission can never accidentally be redirected into updating some
-    // earlier drifted record it was never actually about. Matches
-    // electron/renderer.js's own reasoning (renderer.js:954-959) exactly.
-    const driftUpdate = this.pendingDriftUpdate;
-    this.clearDriftUpdateMode();
 
-    const repoPath = folder.uri.fsPath;
     const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
     const start = editor.document.offsetAt(editor.selection.start);
     const end = editor.document.offsetAt(editor.selection.end);
 
     if (!driftUpdate && start === end) {
       status(`Select some code in the file above first. (${relativePath})`, "hint");
-      return;
-    }
-    if (!message.text.trim()) {
-      status(`Enter some documentation text first. (${relativePath})`, "hint");
       return;
     }
 

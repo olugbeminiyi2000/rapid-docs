@@ -21,6 +21,10 @@ export interface RapidDocsMessage {
   relativePath: string;
   recordId: string | null;
   ranges: { start: number; end: number }[];
+  // Every current, named location this message's subject collides with --
+  // populated only when ranges came back empty because of a genuine tie.
+  // Drives the native DiagnosticRelatedInformation list.
+  collidesWith: { name: string; start: number; end: number }[];
 }
 
 export interface DocRecord {

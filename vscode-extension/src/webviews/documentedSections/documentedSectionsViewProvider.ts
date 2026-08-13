@@ -3,7 +3,9 @@ import { join } from "path";
 import type { DocumentationService, DocumentedSectionItem } from "../../types";
 import type { HighlightController } from "../../highlighting/highlightController";
 import type { ActiveEditorTracker } from "../../editor-interactions/activeEditorTracker";
+import type { DocTextPreview } from "../shared/docTextPreview";
 import { renderWebviewShell } from "../shared/webviewShell";
+import { ComposePanel } from "../compose/composePanel";
 
 // Replicates electron/main.ts's "docs:findDocumentedNodes" handler exactly
 // (main.ts:200-222), not just DocumentationService.findDocumentedNodes()
@@ -47,8 +49,9 @@ export function sectionHighlightKey(recordId: string): string {
 
 type FromWebviewMessage =
   | { type: "reveal"; recordId: string }
-  | { type: "editSubmit"; recordId: string; newText: string }
-  | { type: "delete"; recordId: string };
+  | { type: "edit"; recordId: string }
+  | { type: "delete"; recordId: string }
+  | { type: "preview"; recordId: string };
 
 // Same edit/delete glyphs electron/renderer.js's own ICONS.edit/ICONS.delete
 // used (renderer.js:26-31) -- kept visually consistent with the original
@@ -61,6 +64,12 @@ const ICON_EDIT =
   '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"></path></svg>';
 const ICON_DELETE =
   '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
+// Real user feedback (2026-08-12): docText can be long and multi-line, and
+// this row's own text is truncated to 60 chars -- an eye icon opens the
+// full thing, well-formatted, in a real read-only tab (docTextPreview.ts),
+// same mechanism the delete Quick Fix's QuickPick also uses.
+const ICON_PREVIEW =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
 
 const STYLE = `
   .row { border-bottom: 1px solid var(--vscode-widget-border, transparent); padding: 6px 4px; }
@@ -90,9 +99,11 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
   private items: DocumentedSectionItem[] = [];
 
   constructor(
+    private readonly context: vscode.ExtensionContext,
     private readonly documentationService: DocumentationService,
     private readonly highlightController: HighlightController,
-    private readonly activeEditorTracker: ActiveEditorTracker
+    private readonly activeEditorTracker: ActiveEditorTracker,
+    private readonly docTextPreview: DocTextPreview
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -127,29 +138,9 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
       scriptJs: `
         const ICON_EDIT = ${JSON.stringify(ICON_EDIT)};
         const ICON_DELETE = ${JSON.stringify(ICON_DELETE)};
+        const ICON_PREVIEW = ${JSON.stringify(ICON_PREVIEW)};
         const listEl = document.getElementById('list');
         let items = [];
-
-        // Shared by the row's own Edit button AND a 'beginEdit' message from
-        // the extension host (the editor's right-click "Edit documentation"
-        // has no DOM of its own to swap in-place -- it reuses this exact
-        // same interaction on the corresponding row instead, matching
-        // electron/renderer.js's own editSectionFromContextMenu, renderer.js:854-859).
-        function beginEdit(row, item) {
-          const textEl = row.querySelector('.text');
-          if (!textEl) return; // already mid-edit
-          const input = document.createElement('input');
-          input.value = item.docText;
-          input.style.width = '100%';
-          textEl.replaceWith(input);
-          input.focus();
-          const submit = () => vscode.postMessage({ type: 'editSubmit', recordId: item.recordId, newText: input.value });
-          input.addEventListener('keydown', (ke) => {
-            if (ke.key === 'Enter') submit();
-            else if (ke.key === 'Escape') render();
-          });
-          input.addEventListener('blur', () => submit());
-        }
 
         function render() {
           if (items.length === 0) {
@@ -166,6 +157,7 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
               '<div class="row-header">' +
                 '<span class="lines">line ' + (item.startLine + 1) + '</span>' +
                 '<span class="row-actions">' +
+                  '<button class="icon-button preview" title="Preview full documentation">' + ICON_PREVIEW + '</button>' +
                   '<button class="icon-button edit" title="Edit documentation">' + ICON_EDIT + '</button>' +
                   '<button class="icon-button danger delete" title="Delete documentation">' + ICON_DELETE + '</button>' +
                 '</span>' +
@@ -179,13 +171,17 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
             row.querySelector('.text').addEventListener('click', () => {
               vscode.postMessage({ type: 'reveal', recordId: item.recordId });
             });
+            row.querySelector('.preview').addEventListener('click', (e) => {
+              e.stopPropagation();
+              vscode.postMessage({ type: 'preview', recordId: item.recordId });
+            });
             row.querySelector('.delete').addEventListener('click', (e) => {
               e.stopPropagation();
               vscode.postMessage({ type: 'delete', recordId: item.recordId });
             });
             row.querySelector('.edit').addEventListener('click', (e) => {
               e.stopPropagation();
-              beginEdit(row, item);
+              vscode.postMessage({ type: 'edit', recordId: item.recordId });
             });
 
             listEl.appendChild(row);
@@ -197,10 +193,6 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
           if (message.type === 'setItems') {
             items = message.items;
             render();
-          } else if (message.type === 'beginEdit') {
-            const row = listEl.querySelector('[data-record-id="' + message.recordId + '"]');
-            const item = items.find((i) => i.recordId === message.recordId);
-            if (row && item) beginEdit(row, item);
           }
         });
 
@@ -236,13 +228,23 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
       // row-click behavior (toggleDocSectionHighlight, called unconditionally
       // alongside selectByOffsets, renderer.js:789-796) exactly.
       this.highlightController.toggle(sectionHighlightKey(item.recordId), "documented", [range], editor);
-    } else if (message.type === "editSubmit") {
-      try {
-        this.documentationService.editDocText(repoPath, relativePath, message.recordId, message.newText);
-      } catch (err) {
-        vscode.window.showErrorMessage(`rapid-docs: ${err instanceof Error ? err.message : String(err)}`);
-      }
-      await this.refresh();
+    } else if (message.type === "edit") {
+      const item = this.items.find((i) => i.recordId === message.recordId);
+      if (!item) return;
+      // Replaces the old inline <input> swap entirely (real UX gap: cramped,
+      // a bad fit for anything long or multi-line) -- opens the same
+      // spacious Compose panel already used for writing new docs, pre-filled
+      // with this record's existing text via editDocText (doesn't need a
+      // code selection at all -- unlike writeDoc/updateDriftedDoc, it never
+      // touches the code-matching hashes, only the stored text).
+      const panel = ComposePanel.openOrReveal(
+        this.context,
+        this.documentationService,
+        this.highlightController,
+        () => this.refresh(),
+        this.activeEditorTracker
+      );
+      panel.beginEditRecord(item.recordId, item.relativePath, item.docText);
     } else if (message.type === "delete") {
       try {
         this.documentationService.deleteRecord(repoPath, relativePath, message.recordId);
@@ -250,6 +252,10 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
         vscode.window.showErrorMessage(`rapid-docs: ${err instanceof Error ? err.message : String(err)}`);
       }
       await this.refresh();
+    } else if (message.type === "preview") {
+      const item = this.items.find((i) => i.recordId === message.recordId);
+      if (!item) return;
+      await this.docTextPreview.show(item.docText, message.recordId.slice(0, 8));
     }
   }
 
@@ -293,19 +299,5 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
 
   currentItems(): DocumentedSectionItem[] {
     return this.items;
-  }
-
-  // The editor's right-click "Edit documentation" (7.4) has no DOM of its
-  // own to swap in-place -- it reuses the SAME interaction on the
-  // corresponding row instead, scrolled/revealed into view first in case
-  // the panel wasn't already open. Matches electron/renderer.js's own
-  // editSectionFromContextMenu (renderer.js:854-859) exactly.
-  async beginEditFromContextMenu(recordId: string): Promise<void> {
-    if (this.webviewView) {
-      this.webviewView.show(true);
-    } else {
-      await vscode.commands.executeCommand(`${DocumentedSectionsViewProvider.viewId}.focus`);
-    }
-    void this.webviewView?.webview.postMessage({ type: "beginEdit", recordId });
   }
 }

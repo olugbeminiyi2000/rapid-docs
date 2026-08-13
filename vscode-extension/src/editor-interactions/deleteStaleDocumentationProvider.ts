@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import type { DocumentationService } from "../types";
+import type { DocTextPreview } from "../webviews/shared/docTextPreview";
 
 // The native Quick Fix for deleting a stale record -- VSCode hands
 // provideCodeActions the actual vscode.Diagnostic objects at the cursor
@@ -23,7 +24,8 @@ import type { DocumentationService } from "../types";
 export function registerDeleteStaleDocumentationProvider(
   context: vscode.ExtensionContext,
   documentationService: DocumentationService,
-  refreshDocumentedSections: () => Promise<void>
+  refreshDocumentedSections: () => Promise<void>,
+  docTextPreview: DocTextPreview
 ): void {
   const provider: vscode.CodeActionProvider = {
     provideCodeActions(document, _range, ctx) {
@@ -52,47 +54,39 @@ export function registerDeleteStaleDocumentationProvider(
       const report = documentationService.checkFile(repoPath, relativePath);
       const messages = documentationService.generateMessages(repoPath, relativePath, report);
 
-      const actions: vscode.CodeAction[] = [];
-      for (const diagnostic of relevant) {
+      // Only offer this when NO selection could ever reach the record via
+      // "Update documentation" instead -- message.ranges is the exact same
+      // matchingRanges data findStaleRecordForSelection needs a selection
+      // to overlap; empty here means empty there too, for every possible
+      // selection, not just the one the diagnostic happens to be anchored
+      // at. Error (fully-stale) records are always empty here by
+      // construction; warning (partially-stale) ones are only empty when
+      // genuinely orphaned. A normal, resolvable warning always has a real
+      // matchingRange (that's what lets clicking it jump to the code at
+      // all), so it's excluded here -- Update stays the right path for it.
+      const eligible = relevant.some((diagnostic) => {
         const message = messages.find((m) => m.text === diagnostic.message && m.severity !== "info");
-        if (!message || !message.recordId) continue;
+        return message?.recordId && message.ranges.length === 0;
+      });
+      if (!eligible) return [];
 
-        // Only offer this when NO selection could ever reach the record via
-        // "Update documentation" instead -- message.ranges is the exact
-        // same matchingRanges data findStaleRecordForSelection needs a
-        // selection to overlap; empty here means empty there too, for
-        // every possible selection, not just the one the diagnostic
-        // happens to be anchored at. Error (fully-stale) records are
-        // always empty here by construction (nothing survives to anchor
-        // to at all) -- warning (partially-stale) ones are only empty when
-        // genuinely orphaned, same as the real case that motivated this.
-        // A normal, resolvable warning always has a real matchingRange (it's
-        // what lets clicking it jump to the code at all), so it's
-        // deliberately excluded here -- Update stays the right path for it,
-        // not a competing Delete offer.
-        if (message.ranges.length > 0) continue;
-
-        // Several orphaned records can coincide at the same fallback
-        // position (they all report an empty range, for the same reason),
-        // so VSCode's lightbulb lists all of their actions together --
-        // confirmed to genuinely confuse real testing: two entries titled
-        // identically "Delete stale documentation" with no way to tell
-        // which is which before clicking. A short recordId prefix is
-        // enough to tell them apart in the list itself, without risking a
-        // long docText cluttering the menu -- the real docText still gets
-        // shown in full in the confirmation dialog below, where it
-        // actually matters for deciding whether to delete.
-        const shortId = message.recordId.slice(0, 8);
-        const action = new vscode.CodeAction(`Delete stale documentation (${shortId})`, vscode.CodeActionKind.QuickFix);
-        action.diagnostics = [diagnostic];
-        action.command = {
-          command: "rapidDocs.deleteStaleRecordFromDiagnostic",
-          title: `Delete stale documentation (${shortId})`,
-          arguments: [repoPath, relativePath, message.recordId],
-        };
-        actions.push(action);
-      }
-      return actions;
+      // ONE consolidated action, not one per colliding diagnostic -- real
+      // user feedback: several orphaned records routinely coincide at the
+      // same fallback position (that's what "orphaned" means), and a
+      // lightbulb full of identically-titled entries was tedious and hard
+      // to tell apart. The action opens a QuickPick (below) that lists
+      // every real candidate with its actual docText, the same "compute
+      // fresh, show a real list" pattern the editor context menu already
+      // uses, rather than trying to cram N choices into N separate
+      // lightbulb rows.
+      const action = new vscode.CodeAction("Delete stale documentation...", vscode.CodeActionKind.QuickFix);
+      action.diagnostics = relevant;
+      action.command = {
+        command: "rapidDocs.deleteStaleRecordFromDiagnostic",
+        title: "Delete stale documentation...",
+        arguments: [repoPath, relativePath],
+      };
+      return [action];
     },
   };
 
@@ -104,10 +98,72 @@ export function registerDeleteStaleDocumentationProvider(
     )
   );
 
+  const previewButton: vscode.QuickInputButton = {
+    iconPath: new vscode.ThemeIcon("eye"),
+    tooltip: "Preview full documentation",
+  };
+
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "rapidDocs.deleteStaleRecordFromDiagnostic",
-      async (repoPath: string, relativePath: string, recordId: string) => {
+      async (repoPath: string, relativePath: string) => {
+        // Recomputed fresh again, right here -- the QuickPick may be
+        // invoked a moment after the lightbulb was shown, and this list
+        // must reflect whatever's actually still true, not a snapshot
+        // from when the Quick Fix was first offered.
+        const report = documentationService.checkFile(repoPath, relativePath);
+        const messages = documentationService.generateMessages(repoPath, relativePath, report);
+        const candidates = messages.filter((m) => m.severity !== "info" && m.recordId && m.ranges.length === 0);
+        if (candidates.length === 0) return;
+
+        // Real docText as the label, not a hash or the drift-message
+        // wrapper text -- the whole point raised in review was to actually
+        // SEE what's about to be deleted while choosing, not just tell
+        // entries apart by an opaque id. The eye-icon button (below) is
+        // for the case docText itself is long/multi-line and doesn't fit
+        // legibly on the QuickPick's own single label line -- click it to
+        // open the full thing, well-formatted, in a real tab, without
+        // losing your place in this list.
+        const storageForList = documentationService.loadStorage(repoPath, relativePath);
+        type Item = vscode.QuickPickItem & { recordId: string; docText: string };
+        const items: Item[] = candidates.map((m) => {
+          const docText = storageForList.records[m.recordId!]?.docText ?? "";
+          // A QuickPick label is a single display line -- a raw multi-line
+          // docText would render squashed/illegible there, exactly the
+          // problem being solved. First line only, truncated, is enough to
+          // recognize which one this is; the preview button is the real
+          // way to read a long or multi-line one in full.
+          const firstLine = docText.split("\n")[0] ?? "";
+          const wasTruncated = docText.length > firstLine.length || firstLine.length > 60;
+          const label = firstLine.length > 60 ? firstLine.slice(0, 60) + "…" : firstLine;
+          return {
+            label: (label || `(record ${m.recordId!.slice(0, 8)})`) + (wasTruncated ? " (…)" : ""),
+            description: `(${m.severity})`,
+            recordId: m.recordId!,
+            docText,
+            buttons: [previewButton],
+          };
+        });
+
+        const picked = await new Promise<Item | undefined>((resolve) => {
+          const quickPick = vscode.window.createQuickPick<Item>();
+          quickPick.items = items;
+          quickPick.placeholder = "Select the stale documentation to delete";
+          quickPick.onDidTriggerItemButton((e) => {
+            void docTextPreview.show(e.item.docText, e.item.recordId.slice(0, 8));
+          });
+          quickPick.onDidAccept(() => {
+            resolve(quickPick.selectedItems[0]);
+            quickPick.hide();
+          });
+          quickPick.onDidHide(() => {
+            resolve(undefined);
+            quickPick.dispose();
+          });
+          quickPick.show();
+        });
+        if (!picked) return;
+
         // Real, user-identified risk this guards against: "orphaned" isn't
         // a permanent property of a record -- it's relative to whatever
         // ELSE is currently ambiguous, and can resolve on its own (e.g.
@@ -122,7 +178,7 @@ export function registerDeleteStaleDocumentationProvider(
         // sure", is what lets someone recognize "wait, that's real content
         // I wrote" before it's gone for good.
         const storage = documentationService.loadStorage(repoPath, relativePath);
-        const docText = storage.records[recordId]?.docText;
+        const docText = storage.records[picked.recordId]?.docText;
         if (docText === undefined) return; // already gone, nothing to confirm
 
         const confirmed = await vscode.window.showWarningMessage(
@@ -133,7 +189,7 @@ export function registerDeleteStaleDocumentationProvider(
         if (confirmed !== "Delete") return;
 
         try {
-          documentationService.deleteRecord(repoPath, relativePath, recordId);
+          documentationService.deleteRecord(repoPath, relativePath, picked.recordId);
         } catch (err) {
           vscode.window.showErrorMessage(`rapid-docs: ${err instanceof Error ? err.message : String(err)}`);
           return;
