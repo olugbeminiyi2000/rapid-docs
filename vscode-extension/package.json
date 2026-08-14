@@ -8,7 +8,7 @@
     "vscode": "^1.85.0"
   },
   "categories": ["Other"],
-  "activationEvents": ["onStartupFinished"],
+  "activationEvents": ["onStartupFinished", "onWebviewPanel:rapidDocsCompose"],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -96,6 +96,11 @@
         {
           "id": "rapidDocsDocumentedSections",
           "name": "Documented Sections",
+          "type": "webview"
+        },
+        {
+          "id": "rapidDocsArchive",
+          "name": "Archive",
           "type": "webview"
         }
       ]

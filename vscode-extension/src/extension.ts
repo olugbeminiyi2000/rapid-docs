@@ -1,11 +1,13 @@
 import * as vscode from "vscode";
-import { writeFileSync } from "fs";
+import { writeFileSync, existsSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { bootstrapBackend } from "./backend/bootstrap";
 import { createDiagnosticsController, activateDiagnosticsLiveWiring } from "./diagnostics/diagnosticsController";
 import { createHighlightController } from "./highlighting/highlightController";
 import { DocumentedSectionsViewProvider } from "./webviews/documentedSections/documentedSectionsViewProvider";
+import { ArchiveViewProvider } from "./webviews/archive/archiveViewProvider";
+import { createActivityLog } from "./activity/activityLog";
 import { registerDiagnosticPositionHighlight } from "./editor-interactions/diagnosticPositionHighlight";
 import { registerDeleteStaleDocumentationProvider } from "./editor-interactions/deleteStaleDocumentationProvider";
 import { registerDocTextPreview } from "./webviews/shared/docTextPreview";
@@ -60,13 +62,28 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // Preview) used everywhere docText is shown short, not a custom viewer.
   const docTextPreview = registerDocTextPreview(context);
 
+  // Section 7.6: a persistent, session-long record of what actually
+  // happened (writes/edits/deletes/attaches/discards, and every error along
+  // the way) -- the one thing Documented Sections/Problems/Archive can
+  // never provide, since all three only ever reflect CURRENT state, with no
+  // memory of what changed to get there. See activityLog.ts's own header
+  // for why this is a native LogOutputChannel, not a custom Webview.
+  const activityLog = createActivityLog(context);
+
   // Section 7.2: Documented Sections rebuilt as a Webview (not a TreeView --
   // see PARITY-CHECKLIST.md's 2026-08-11 decision). File-scoped, same as the
   // Electron panel was, so it refreshes whenever the active file changes.
-  const documentedSectionsProvider = new DocumentedSectionsViewProvider(context, backend.documentationService, highlightController, activeEditorTracker, docTextPreview);
+  const documentedSectionsProvider = new DocumentedSectionsViewProvider(context, backend.documentationService, highlightController, activeEditorTracker, docTextPreview, activityLog);
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(DocumentedSectionsViewProvider.viewId, documentedSectionsProvider)
   );
+
+  // Section 7.5: unlike Documented Sections, not file-scoped -- loadArchive
+  // returns every archived record project-wide, so this view only ever
+  // needs repoPath, never activeEditorTracker.
+  const archiveProvider = new ArchiveViewProvider(backend.documentationService, docTextPreview, activityLog);
+  context.subscriptions.push(vscode.window.registerWebviewViewProvider(ArchiveViewProvider.viewId, archiveProvider));
+  void archiveProvider.refresh();
 
   function onActiveEditorChanged(): void {
     void documentedSectionsProvider.refresh();
@@ -91,7 +108,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // 7.6: native Quick Fix for deleting a stale (warning or error) record --
   // see deleteStaleDocumentationProvider.ts's own header for why this
   // covers both severities, not just error/fully-stale as first scoped.
-  registerDeleteStaleDocumentationProvider(context, backend.documentationService, () => documentedSectionsProvider.refresh(), docTextPreview);
+  registerDeleteStaleDocumentationProvider(context, backend.documentationService, () => documentedSectionsProvider.refresh(), docTextPreview, activityLog);
 
   // Section 7.3: Compose, a real WebviewPanel opened beside the editor
   // (not docked in the sidebar) per the 2026-08-11 decision, so code and
@@ -101,6 +118,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     highlightController,
     refreshDocumentedSections: () => documentedSectionsProvider.refresh(),
     activeEditorTracker,
+    activityLog,
   });
 
   // Section 7.4 (rebuilt 2026-08-11): one static menu entry that opens a
@@ -116,7 +134,24 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     activeEditorTracker,
     highlightController,
     refreshDocumentedSections: () => documentedSectionsProvider.refresh(),
+    refreshArchive: () => archiveProvider.refresh(),
+    docTextPreview,
+    activityLog,
   });
+
+  // Section 7.7: real, confirmed gap -- unlike electron/main.ts (which
+  // explicitly checked isGitRepo() before doing anything and rejected a
+  // non-repo folder with a clear message), this extension had NO equivalent
+  // check anywhere. GitService.runGit() just runs `git ls-files`/`git
+  // diff`/etc. directly; against a folder with no .git at all, that throws,
+  // and since nothing here caught it, activate() itself would reject --
+  // VSCode surfaces that as "extension failed to activate," leaving
+  // everything (including the git-INDEPENDENT features below, which had
+  // already finished registering by this point) in an undefined, half-wired
+  // state. A ".git" folder is the one thing every real git repo has,
+  // regardless of history/branch/commits -- same one-line check
+  // electron/main.ts already used (main.ts:376-377).
+  const isGitRepo = (candidatePath: string): boolean => existsSync(join(candidatePath, ".git"));
 
   // Section 7.1 re-confirmation: this previously only ever ran via manual
   // test commands -- a real user opening the extension got no initial
@@ -129,20 +164,66 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // missing for real (renaming a documented function left Documented
   // Sections showing stale, pre-rename data until the user switched files
   // away and back).
-  await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, backend.liveWatchService, (relativePaths) => {
-    const editor = activeEditorTracker.getEditor();
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!editor || !folder) return;
-    // Normalized to forward-slash before comparing -- LiveWatchService's own
-    // relativePaths always are (live-watch.service.ts:253, toRelativePath),
-    // but vscode.workspace.asRelativePath returns the OS-native separator
-    // (backslash on Windows) by default. A plain .includes() would silently
-    // never match on Windows otherwise -- the exact same class of bug
-    // already found and fixed once in live-watch.service.ts itself
-    // (chokidar's forward-slash paths vs. path.join's native ones).
-    const currentRelativePath = vscode.workspace.asRelativePath(editor.document.uri, false).split(/[\\/]/).join("/");
-    if (relativePaths.includes(currentRelativePath)) void documentedSectionsProvider.refresh();
-  });
+  //
+  // Pulled into its own named function, not just an inline await, so it can
+  // be called from either of two places below: immediately, if the folder
+  // is already a real git repo, or later, the moment one gets initialized
+  // (git init, or VSCode's own "Initialize Repository" button) -- the exact
+  // same wiring either way, just triggered at a different time. Real, user-
+  // requested behavior (2026-08-15): a non-git folder must never throw or
+  // block the OTHER, git-independent features (Compose/Documented Sections/
+  // Archive/Activity, none of which touch GitService at all) from working
+  // immediately -- and once a repo does exist, everything git-dependent
+  // should come alive on its own, with no reload required.
+  async function startGitDependentFeatures(): Promise<void> {
+    await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, backend.liveWatchService, (relativePaths) => {
+      // Unconditional and unscoped, unlike Documented Sections below -- ANY
+      // file's deletion can add a new archive entry (handleDeletedFile),
+      // never just the currently-open one, so there's no relativePaths
+      // filtering to do here at all.
+      void archiveProvider.refresh();
+
+      const editor = activeEditorTracker.getEditor();
+      const folder = vscode.workspace.workspaceFolders?.[0];
+      if (!editor || !folder) return;
+      // Normalized to forward-slash before comparing -- LiveWatchService's own
+      // relativePaths always are (live-watch.service.ts:253, toRelativePath),
+      // but vscode.workspace.asRelativePath returns the OS-native separator
+      // (backslash on Windows) by default. A plain .includes() would silently
+      // never match on Windows otherwise -- the exact same class of bug
+      // already found and fixed once in live-watch.service.ts itself
+      // (chokidar's forward-slash paths vs. path.join's native ones).
+      const currentRelativePath = vscode.workspace.asRelativePath(editor.document.uri, false).split(/[\\/]/).join("/");
+      if (relativePaths.includes(currentRelativePath)) void documentedSectionsProvider.refresh();
+    });
+    // Real, visible confirmation that this actually ran -- otherwise
+    // there's no way to tell "git wiring came alive" apart from "nothing
+    // happened" just by looking at the UI.
+    activityLog.success("Git repository detected. Sync and live drift-detection are now active.");
+  }
+
+  const startupFolder = vscode.workspace.workspaceFolders?.[0];
+  if (startupFolder && isGitRepo(startupFolder.uri.fsPath)) {
+    await startGitDependentFeatures();
+  } else if (startupFolder) {
+    // Not a git repo YET -- watch specifically for ".git" being created at
+    // the workspace root (git init, or VSCode's own Source Control panel's
+    // "Initialize Repository" button both produce this) and start the same
+    // git-dependent wiring the moment it appears, no reload needed. A
+    // native vscode.FileSystemWatcher, not chokidar -- this only ever needs
+    // to notice ONE specific path being created, not walk/watch the whole
+    // tree the way LiveWatchService's own broader watcher does.
+    const gitInitWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(startupFolder, ".git")
+    );
+    context.subscriptions.push(gitInitWatcher);
+    const disposable = gitInitWatcher.onDidCreate(() => {
+      disposable.dispose();
+      void startGitDependentFeatures();
+    });
+    context.subscriptions.push(disposable);
+    activityLog.hint("No git repository found yet. Sync and live drift-detection will activate automatically once one exists (e.g. after \"git init\").");
+  }
 
   registerAllTestCommands(context, {
     backend,

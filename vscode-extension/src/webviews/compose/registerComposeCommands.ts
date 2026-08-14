@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { DocumentationService } from "../../types";
 import type { HighlightController } from "../../highlighting/highlightController";
 import type { ActiveEditorTracker } from "../../editor-interactions/activeEditorTracker";
+import type { ActivityLog } from "../../activity/activityLog";
 import { ComposePanel } from "./composePanel";
 
 export interface ComposeCommandsDeps {
@@ -9,6 +10,7 @@ export interface ComposeCommandsDeps {
   highlightController: HighlightController;
   refreshDocumentedSections: () => Promise<void>;
   activeEditorTracker: ActiveEditorTracker;
+  activityLog: ActivityLog;
 }
 
 export function registerComposeCommands(context: vscode.ExtensionContext, deps: ComposeCommandsDeps): void {
@@ -21,7 +23,7 @@ export function registerComposeCommands(context: vscode.ExtensionContext, deps: 
       // showing leftover drift-update state (button/text from an earlier,
       // unrelated action) must not carry that state into a new, unrelated
       // "document selection" session.
-      const panel = ComposePanel.openOrReveal(context, deps.documentationService, deps.highlightController, deps.refreshDocumentedSections, deps.activeEditorTracker);
+      const panel = ComposePanel.openOrReveal(context, deps.documentationService, deps.highlightController, deps.refreshDocumentedSections, deps.activeEditorTracker, deps.activityLog);
       panel.resetToFresh();
     })
   );
@@ -30,4 +32,18 @@ export function registerComposeCommands(context: vscode.ExtensionContext, deps: 
   // 7.4's real "Update documentation (code changed)" trigger, removed
   // 2026-08-11 now that registerEditorContextMenu.ts's QuickPick calls
   // beginDriftUpdate() directly for real.
+
+  // Real bug found via manual testing (2026-08-15): reloading the window
+  // while Compose was open left an empty tab behind -- VSCode remembers a
+  // panel WAS open there and shows its shell again, but has no way to
+  // regenerate the HTML content itself; that only ever happens through our
+  // own code, which never re-ran for a revived tab without a registered
+  // serializer telling VSCode how to do it.
+  context.subscriptions.push(
+    vscode.window.registerWebviewPanelSerializer("rapidDocsCompose", {
+      async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel): Promise<void> {
+        ComposePanel.revive(webviewPanel, context, deps.documentationService, deps.highlightController, deps.refreshDocumentedSections, deps.activeEditorTracker, deps.activityLog);
+      },
+    })
+  );
 }

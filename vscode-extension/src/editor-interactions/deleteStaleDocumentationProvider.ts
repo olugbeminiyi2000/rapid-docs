@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import type { DocumentationService } from "../types";
 import type { DocTextPreview } from "../webviews/shared/docTextPreview";
+import type { ActivityLog } from "../activity/activityLog";
 
 // The native Quick Fix for deleting a stale record -- VSCode hands
 // provideCodeActions the actual vscode.Diagnostic objects at the cursor
@@ -25,7 +26,8 @@ export function registerDeleteStaleDocumentationProvider(
   context: vscode.ExtensionContext,
   documentationService: DocumentationService,
   refreshDocumentedSections: () => Promise<void>,
-  docTextPreview: DocTextPreview
+  docTextPreview: DocTextPreview,
+  activityLog: ActivityLog
 ): void {
   const provider: vscode.CodeActionProvider = {
     provideCodeActions(document, _range, ctx) {
@@ -181,17 +183,27 @@ export function registerDeleteStaleDocumentationProvider(
         const docText = storage.records[picked.recordId]?.docText;
         if (docText === undefined) return; // already gone, nothing to confirm
 
+        // detail (not a crammed single message string) is what gives this
+        // the same bold-title / lighter-secondary-paragraph structure
+        // VSCode's own native confirm dialogs use (e.g. the file-delete
+        // "you can restore this from the Recycle Bin" prompt) -- real user
+        // feedback (2026-08-15) that the previous single-string version
+        // looked flatter than VSCode's own dialogs, which this is the same
+        // underlying native mechanism as, not a custom one.
         const confirmed = await vscode.window.showWarningMessage(
-          `Permanently delete this documentation? This cannot be undone.\n\n"${docText}"`,
-          { modal: true },
+          "Permanently delete this documentation? This cannot be undone.",
+          { modal: true, detail: `"${docText}"` },
           "Delete"
         );
         if (confirmed !== "Delete") return;
 
         try {
           documentationService.deleteRecord(repoPath, relativePath, picked.recordId);
+          activityLog.success(`Deleted stale documentation. (${relativePath})`);
         } catch (err) {
-          vscode.window.showErrorMessage(`rapid-docs: ${err instanceof Error ? err.message : String(err)}`);
+          const errText = `${err instanceof Error ? err.message : String(err)} (${relativePath})`;
+          activityLog.error(errText);
+          vscode.window.showErrorMessage(`rapid-docs: ${errText}`);
           return;
         }
         // Native Problems updates on its own via the existing live-watch

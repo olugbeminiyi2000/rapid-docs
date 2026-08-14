@@ -4,6 +4,7 @@ import type { DocumentationService, DocumentedSectionItem } from "../../types";
 import type { HighlightController } from "../../highlighting/highlightController";
 import type { ActiveEditorTracker } from "../../editor-interactions/activeEditorTracker";
 import type { DocTextPreview } from "../shared/docTextPreview";
+import type { ActivityLog } from "../../activity/activityLog";
 import { renderWebviewShell } from "../shared/webviewShell";
 import { ComposePanel } from "../compose/composePanel";
 
@@ -103,7 +104,8 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
     private readonly documentationService: DocumentationService,
     private readonly highlightController: HighlightController,
     private readonly activeEditorTracker: ActiveEditorTracker,
-    private readonly docTextPreview: DocTextPreview
+    private readonly docTextPreview: DocTextPreview,
+    private readonly activityLog: ActivityLog
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -242,14 +244,34 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
         this.documentationService,
         this.highlightController,
         () => this.refresh(),
-        this.activeEditorTracker
+        this.activeEditorTracker,
+        this.activityLog
       );
       panel.beginEditRecord(item.recordId, item.relativePath, item.docText);
     } else if (message.type === "delete") {
+      const item = this.items.find((i) => i.recordId === message.recordId);
+      if (!item) return;
+      // Real user concern (2026-08-15): a Documented Sections row's trash
+      // icon is one accidental click away from destroying documentation
+      // someone just wrote -- no other action here (edit, preview) is
+      // destructive, only this one, so it's the only one that needs a
+      // guard. Same data-loss-prevention pattern as delete-stale-
+      // documentation and archive-discard: show the real docText, require
+      // an explicit "Delete" click, not just "are you sure".
+      const confirmed = await vscode.window.showWarningMessage(
+        "Permanently delete this documentation? This cannot be undone.",
+        { modal: true, detail: `"${item.docText}"` },
+        "Delete"
+      );
+      if (confirmed !== "Delete") return;
+
       try {
         this.documentationService.deleteRecord(repoPath, relativePath, message.recordId);
+        this.activityLog.success(`Deleted documentation. (${relativePath})`);
       } catch (err) {
-        vscode.window.showErrorMessage(`rapid-docs: ${err instanceof Error ? err.message : String(err)}`);
+        const errText = `${err instanceof Error ? err.message : String(err)} (${relativePath})`;
+        this.activityLog.error(errText);
+        vscode.window.showErrorMessage(`rapid-docs: ${errText}`);
       }
       await this.refresh();
     } else if (message.type === "preview") {

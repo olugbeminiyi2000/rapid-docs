@@ -1003,6 +1003,193 @@ console.log(result);
     });
   });
 
+  // Real bug found via manual testing (2026-08-13): documenting just the
+  // `return a + b;` sub-expression inside one of two structurally-identical
+  // twin functions writes successfully (nothing here throws -- the record
+  // genuinely gets saved), but then silently vanishes from
+  // findDocumentedNodes/Documented Sections with zero explanation, because
+  // its content -- ReturnStatement/BinaryExpression/two Identifiers -- has
+  // TWO current occurrences (one inside each twin) where exactly one is
+  // needed, and findDocumentedNodes's own bounding-box fallback (span from
+  // the earliest to the latest occurrence) fails its own re-verification
+  // and gets dropped. checkFile's anchor-resolution ALREADY runs for every
+  // record regardless of drift status, so this exact ambiguity was already
+  // being computed correctly (status "unchanged", matchingRanges empty,
+  // collidesWith naming both twins) -- generateMessages simply never
+  // surfaced it, since it only ever emitted anything for partially_stale/
+  // fully_stale. User's explicit call: this belongs in Problems as a
+  // warning naming both real locations, not silently missing from
+  // Documented Sections -- and specifically NOT the drift/staleness wording
+  // (nothing here is stale; the record is perfectly unchanged, it's just
+  // unlocatable).
+  describe("unchanged-but-ambiguous records (a record whose content exists in more than one current place)", () => {
+    it("warns, naming both real locations, instead of silently vanishing from Documented Sections", () => {
+      const twinCode = `function division(a, b) {\n  return a + b;\n}\n\nfunction divisor(a, b) {\n  return a + b;\n}\n`;
+      writeFileSync(join(repoPath, relativePath), twinCode);
+
+      const divisorReturnStart = twinCode.indexOf("return a + b;", twinCode.indexOf("function divisor"));
+      const divisorReturnEnd = divisorReturnStart + "return a + b;".length;
+      const { recordId } = docService.writeDoc(repoPath, relativePath, divisorReturnStart, divisorReturnEnd, "second function return");
+
+      const report = docService.checkFile(repoPath, relativePath);
+      const drift = report.driftResults.find((d) => d.recordId === recordId);
+
+      // The underlying computation was already correct before this fix --
+      // asserted here to pin down that this test is about generateMessages
+      // failing to surface it, not about checkFile's own anchor resolution.
+      expect(drift?.status).toBe("unchanged");
+      expect(drift?.matchingRanges).toEqual([]);
+      expect(drift?.collidesWith.length).toBeGreaterThan(0);
+
+      const messages = docService.generateMessages(repoPath, relativePath, report);
+      const warning = messages.find((m) => m.recordId === recordId);
+
+      expect(warning).toBeDefined();
+      expect(warning?.severity).toBe("warning");
+      // No clickable position exists -- also what makes the existing
+      // "Delete stale documentation" Quick Fix (gated on ranges.length === 0)
+      // reachable for this case for free, no new UI needed.
+      expect(warning?.ranges).toEqual([]);
+      expect(warning?.text).toContain("division");
+      expect(warning?.text).toContain("divisor");
+      expect(warning?.text).toContain("Delete stale documentation");
+      // Must not borrow the drift/staleness wording -- nothing here is stale.
+      expect(warning?.text).not.toContain("out of date");
+      expect(warning?.text).not.toContain("no longer matches");
+    });
+
+    // Real bug found via live testing in the actual extension, right after
+    // the fix above shipped (2026-08-13): the unit test above only ever had
+    // ONE record in storage, so it never exercised the shared, DEPLETING
+    // position pool checkFile's own anchor-resolution pass uses across
+    // records (see that pass's own comment). With the two FULL twin
+    // functions ALSO documented as their own records, they resolve first
+    // (each has its own unique name to anchor on) and, in doing so, CLAIM
+    // AND REMOVE their own return statement's position from the shared
+    // pool -- by the time the smaller, ambiguous sub-selection record's own
+    // turn comes, both real occurrences have already been consumed by
+    // records that have nothing to do with it, and its own collidesWith
+    // came back completely empty (nothing left in the pool to explain),
+    // silently suppressing the very warning the fix above was built to add.
+    it("still explains the collision even when other, unrelated records have already claimed the same positions from the shared pool", () => {
+      const twinCode = `function division(a, b) {\n  return a + b;\n}\n\nfunction divisor(a, b) {\n  return a + b;\n}\n`;
+      writeFileSync(join(repoPath, relativePath), twinCode);
+
+      const divisionEnd = twinCode.indexOf("\n\nfunction divisor") + 1;
+      const divisorStart = twinCode.indexOf("function divisor");
+      const divisorEnd = twinCode.length;
+
+      // The two FULL functions, documented first -- exactly the real order
+      // that triggers the pool-depletion bug (each claims its own unique
+      // name, then grows its box to claim its own return statement too).
+      docService.writeDoc(repoPath, relativePath, 0, divisionEnd, "documents division");
+      docService.writeDoc(repoPath, relativePath, divisorStart, divisorEnd, "documents divisor");
+
+      const divisorReturnStart = twinCode.indexOf("return a + b;", divisorStart);
+      const divisorReturnEnd = divisorReturnStart + "return a + b;".length;
+      const { recordId } = docService.writeDoc(repoPath, relativePath, divisorReturnStart, divisorReturnEnd, "second function return");
+
+      const report = docService.checkFile(repoPath, relativePath);
+      const drift = report.driftResults.find((d) => d.recordId === recordId);
+
+      expect(drift?.status).toBe("unchanged");
+      expect(drift?.matchingRanges).toEqual([]);
+      // The actual bug: this used to come back empty once the two other
+      // records had already claimed both real positions.
+      expect(drift?.collidesWith.length).toBeGreaterThan(0);
+
+      const messages = docService.generateMessages(repoPath, relativePath, report);
+      const warning = messages.find((m) => m.recordId === recordId);
+      expect(warning).toBeDefined();
+      expect(warning?.severity).toBe("warning");
+    });
+
+    // Real bug found via live testing in the actual extension (2026-08-14):
+    // a record selecting divisor's own signature (its name plus both
+    // params, NOT the shared return statement) was ALSO wrongly warned
+    // about -- while it was simultaneously showing up completely fine in
+    // Documented Sections. checkFile's OWN anchor-resolution deliberately
+    // never trusts a plain identifier (including a name) as an anchor, on
+    // purpose, for a real reason (a REUSED generic name like `n` isn't
+    // reliable evidence of location) -- so by checkFile's own, intentionally
+    // conservative logic, this record genuinely has no compound anchor and
+    // stays "ambiguous." But findDocumentedNodes (the thing that actually
+    // decides what Documented Sections shows) has no such restriction, and
+    // correctly resolves this record via its own genuinely unique name,
+    // verified safe by its own exact-hash re-check. The warning must answer
+    // the real, user-visible question -- does this actually show in
+    // Documented Sections -- not defer to a second opinion that disagrees
+    // with what's already correctly showing right next to it.
+    it("does not warn about a record checkFile's own conservative anchor logic calls ambiguous, when Documented Sections can already resolve it correctly via a genuinely unique name", () => {
+      const code = `function division(a, b) {\n  return a + b;\n}\n\nfunction divisor(a, b) {\n  return a + b;\n}\n`;
+      writeFileSync(join(repoPath, relativePath), code);
+
+      const divisionEnd = code.indexOf("\n\nfunction divisor") + 1;
+      const divisorStart = code.indexOf("function divisor");
+      const divisorEnd = code.length;
+
+      docService.writeDoc(repoPath, relativePath, 0, divisionEnd, "documents division");
+      docService.writeDoc(repoPath, relativePath, divisorStart, divisorEnd, "documents divisor");
+
+      const signatureEnd = code.indexOf(")", divisorStart) + 1;
+      const { recordId } = docService.writeDoc(repoPath, relativePath, divisorStart, signatureEnd, "documenting the top part");
+
+      // Confirms the premise directly, not just the absence of a warning:
+      // findDocumentedNodes really does resolve this record on its own.
+      const located = docService.findDocumentedNodes(repoPath, relativePath);
+      expect(located.some((location) => location.recordId === recordId)).toBe(true);
+
+      const report = docService.checkFile(repoPath, relativePath);
+      const drift = report.driftResults.find((d) => d.recordId === recordId);
+      expect(drift?.status).toBe("unchanged");
+
+      const messages = docService.generateMessages(repoPath, relativePath, report);
+      expect(messages.find((m) => m.recordId === recordId)).toBeUndefined();
+    });
+
+    // Real bug found via live testing (2026-08-14): a record made entirely
+    // of a single bare leaf (a `: number` type keyword, no compound
+    // structure at all) is genuinely missing from Documented Sections
+    // (that hash appears many times across two twin functions, so
+    // findDocumentedNodes's own bounding box grows far too wide and fails
+    // its own re-verification) -- but checkFile's own anchor-resolution has
+    // a SEPARATE early-exit for "no compound member survives at all" that
+    // used to bail out with collidesWith left unconditionally empty,
+    // meaning the warning's old collidesWith-based gate never fired for it,
+    // even though it's just as genuinely unlocatable.
+    it("warns about a record made entirely of a single leaf, even though checkFile's own anchor logic never populates collidesWith for it", () => {
+      const twinCode = `function division(a: number, b: number): number {\n  return a / b;\n}\n\nfunction divisor(a: number, b: number): number {\n  return a / b;\n}\n`;
+      writeFileSync(join(repoPath, relativePath), twinCode);
+
+      const numberStart = twinCode.indexOf(": number") + 2;
+      const numberEnd = numberStart + "number".length;
+      const { recordId } = docService.writeDoc(repoPath, relativePath, numberStart, numberEnd, "documenting number only");
+
+      const located = docService.findDocumentedNodes(repoPath, relativePath);
+      expect(located.some((location) => location.recordId === recordId)).toBe(false);
+
+      const report = docService.checkFile(repoPath, relativePath);
+      const drift = report.driftResults.find((d) => d.recordId === recordId);
+      expect(drift?.status).toBe("unchanged");
+      expect(drift?.matchingRanges).toEqual([]);
+
+      const messages = docService.generateMessages(repoPath, relativePath, report);
+      const warning = messages.find((m) => m.recordId === recordId);
+      expect(warning).toBeDefined();
+      expect(warning?.severity).toBe("warning");
+      expect(warning?.ranges).toEqual([]);
+    });
+
+    it("does not warn about an ordinary unchanged record that has a real, unambiguous location", () => {
+      docService.writeDoc(repoPath, relativePath, 0, 84, "greet() builds and logs a greeting.");
+
+      const report = docService.checkFile(repoPath, relativePath);
+      const messages = docService.generateMessages(repoPath, relativePath, report);
+
+      expect(messages.some((m) => m.severity === "warning")).toBe(false);
+    });
+  });
+
   describe("Message.ranges -- click-to-highlight position data", () => {
     it("gives a warning message one range per surviving anchor, ready to highlight on demand", () => {
       docService.writeDoc(repoPath, relativePath, 0, 84, "greet() builds and logs a greeting.");

@@ -3,12 +3,17 @@ import type { DocumentationService } from "../types";
 import { ComposePanel } from "../webviews/compose/composePanel";
 import type { HighlightController } from "../highlighting/highlightController";
 import type { ActiveEditorTracker } from "./activeEditorTracker";
+import type { DocTextPreview } from "../webviews/shared/docTextPreview";
+import type { ActivityLog } from "../activity/activityLog";
 
 export interface EditorContextMenuDeps {
   documentationService: DocumentationService;
   activeEditorTracker: ActiveEditorTracker;
   highlightController: HighlightController;
   refreshDocumentedSections: () => Promise<void>;
+  refreshArchive: () => Promise<void>;
+  docTextPreview: DocTextPreview;
+  activityLog: ActivityLog;
 }
 
 interface ActionItem extends vscode.QuickPickItem {
@@ -82,7 +87,8 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
               deps.documentationService,
               deps.highlightController,
               deps.refreshDocumentedSections,
-              deps.activeEditorTracker
+              deps.activeEditorTracker,
+              deps.activityLog
             );
             panel.beginEditRecord(matchingRecord.recordId, relativePath, matchingRecord.docText);
           },
@@ -90,10 +96,24 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
         items.push({
           label: "Delete documentation",
           run: async () => {
+            // Same data-loss-prevention pattern as Documented Sections' own
+            // delete button -- the same deleteRecord call, reached by a
+            // second UI path, deserves the same guard rather than a weaker
+            // one just because it's a menu item instead of an icon.
+            const confirmed = await vscode.window.showWarningMessage(
+              "Permanently delete this documentation? This cannot be undone.",
+              { modal: true, detail: `"${matchingRecord.docText}"` },
+              "Delete"
+            );
+            if (confirmed !== "Delete") return;
+
             try {
               deps.documentationService.deleteRecord(repoPath, relativePath, matchingRecord.recordId);
+              deps.activityLog.success(`Deleted documentation. (${relativePath})`);
             } catch (err) {
-              vscode.window.showErrorMessage(`rapid-docs: ${err instanceof Error ? err.message : String(err)}`);
+              const message = `${err instanceof Error ? err.message : String(err)} (${relativePath})`;
+              deps.activityLog.error(message);
+              vscode.window.showErrorMessage(`rapid-docs: ${message}`);
               return;
             }
             await deps.refreshDocumentedSections();
@@ -109,7 +129,8 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
                 deps.documentationService,
                 deps.highlightController,
                 deps.refreshDocumentedSections,
-                deps.activeEditorTracker
+                deps.activeEditorTracker,
+                deps.activityLog
               );
               panel.beginDriftUpdate(staleRecord.recordId, relativePath, staleRecord.docText);
             },
@@ -123,11 +144,75 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
               deps.documentationService,
               deps.highlightController,
               deps.refreshDocumentedSections,
-              deps.activeEditorTracker
+              deps.activeEditorTracker,
+              deps.activityLog
             );
             panel.resetToFresh();
           },
         });
+
+        // Only offered when there's actually something to attach -- an
+        // empty archive would just be a dead-end menu entry. Section 7.5:
+        // reuses the exact "createQuickPick + preview eye-icon button"
+        // pattern the delete-stale-documentation Quick Fix already proved,
+        // rather than inventing Electron's separate "Attach here" bar --
+        // one selection, one selection here, one attach action for it.
+        const archive = deps.documentationService.loadArchive(repoPath);
+        if (archive.length > 0) {
+          items.push({
+            label: "Attach archived record...",
+            run: async () => {
+              type Item = vscode.QuickPickItem & { archiveId: string; docText: string };
+              const previewButton: vscode.QuickInputButton = {
+                iconPath: new vscode.ThemeIcon("eye"),
+                tooltip: "Preview full documentation",
+              };
+              const pickerItems: Item[] = archive.map((entry) => {
+                const firstLine = entry.docText.split("\n")[0] ?? "";
+                const wasTruncated = entry.docText.length > firstLine.length || firstLine.length > 60;
+                const label = firstLine.length > 60 ? firstLine.slice(0, 60) + "…" : firstLine;
+                return {
+                  label: (label || `(archived ${entry.id.slice(0, 8)})`) + (wasTruncated ? " (…)" : ""),
+                  description: `from ${entry.originalFileId}`,
+                  archiveId: entry.id,
+                  docText: entry.docText,
+                  buttons: [previewButton],
+                };
+              });
+
+              const picked = await new Promise<Item | undefined>((resolve) => {
+                const quickPick = vscode.window.createQuickPick<Item>();
+                quickPick.items = pickerItems;
+                quickPick.placeholder = "Select an archived record to attach to this selection";
+                quickPick.onDidTriggerItemButton((e) => {
+                  void deps.docTextPreview.show(e.item.docText, e.item.archiveId.slice(0, 8));
+                });
+                quickPick.onDidAccept(() => {
+                  resolve(quickPick.selectedItems[0]);
+                  quickPick.hide();
+                });
+                quickPick.onDidHide(() => {
+                  resolve(undefined);
+                  quickPick.dispose();
+                });
+                quickPick.show();
+              });
+              if (!picked) return;
+
+              try {
+                deps.documentationService.attachArchivedRecord(repoPath, picked.archiveId, relativePath, start, end);
+                deps.activityLog.success(`Attached archived documentation. (${relativePath})`);
+              } catch (err) {
+                const message = `${err instanceof Error ? err.message : String(err)} (${relativePath})`;
+                deps.activityLog.error(message);
+                vscode.window.showErrorMessage(`rapid-docs: ${message}`);
+                return;
+              }
+              await deps.refreshDocumentedSections();
+              await deps.refreshArchive();
+            },
+          });
+        }
       }
 
       if (items.length === 0) return;

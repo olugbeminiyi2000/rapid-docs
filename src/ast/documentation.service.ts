@@ -750,6 +750,21 @@ export class DocumentationService {
       positionsByHash.set(hash, positions);
     }
 
+    // A separate, never-mutated snapshot, taken before any record claims
+    // (and removes) positions from positionsByHash below. Real bug found
+    // via live testing (2026-08-13): with several records all touching the
+    // same shared area, an ambiguous record's own collidesWith could come
+    // back EMPTY -- not because nothing collides, but because whichever
+    // more-intact record got resolved first had already claimed and
+    // removed the exact positions collidesWith needed to explain the tie.
+    // Explaining a collision needs the true, complete picture of every
+    // current occurrence, independent of what the depleting pool has left
+    // over for a DIFFERENT purpose (resolving which record owns what) --
+    // a shallow copy is enough since positionsByHash's own depletion below
+    // replaces each entry with a new filtered array rather than mutating
+    // the existing one in place, so this snapshot's arrays are never touched.
+    const originalPositionsByHash = new Map(positionsByHash);
+
     const storage = this.loadStorage(repoPath, relativePath);
     const documentedHashes = new Set<string>();
     const recordStatuses: { recordId: string; record: DocRecord; status: DriftResult["status"]; changedMembers: RecordMember[] }[] = [];
@@ -864,7 +879,24 @@ export class DocumentationService {
       );
 
       if (survivingCompoundMembers.length === 0) {
-        anchorsByRecordId.set(recordId, { name: null, matchingRanges: [], collidesWith: [] });
+        // Real bug found via live testing (2026-08-14): a record made
+        // ENTIRELY of leaf content (e.g. documenting a single bare `number`
+        // type keyword, no compound structure at all) used to bail out here
+        // with an unconditionally empty collidesWith -- not because nothing
+        // collides, but because this branch never even looked. Same
+        // explanation logic as the compound-member branch below, just
+        // applied to whatever currently-surviving members this record
+        // actually has (all leaves, by construction of reaching this
+        // branch with an "unchanged" record).
+        const collidesWith = new Map<string, { name: string; start: number; end: number }>();
+        for (const member of record.members) {
+          if (!currentHashes.has(member.hash)) continue;
+          for (const position of originalPositionsByHash.get(member.hash) ?? []) {
+            const container = findContainer(position);
+            if (container !== null) collidesWith.set(container.name, container);
+          }
+        }
+        anchorsByRecordId.set(recordId, { name: null, matchingRanges: [], collidesWith: [...collidesWith.values()] });
         continue;
       }
 
@@ -898,7 +930,7 @@ export class DocumentationService {
         // member -- one entry per real candidate location, not one per hash.
         const collidesWith = new Map<string, { name: string; start: number; end: number }>();
         for (const member of survivingCompoundMembers) {
-          for (const position of positionsByHash.get(member.hash) ?? []) {
+          for (const position of originalPositionsByHash.get(member.hash) ?? []) {
             const container = findContainer(position);
             if (container !== null) collidesWith.set(container.name, container);
           }
@@ -910,6 +942,18 @@ export class DocumentationService {
       const chosenPositions = this.chooseBoundingBoxPositions(survivingCompoundMembers, positionsByHash);
       const claimed = new Set(chosenPositions);
       for (const [hash, positions] of positionsByHash) {
+        // Real bug found via live testing (2026-08-14): a hash that was
+        // ALREADY unique before any record claimed anything (exactly one
+        // occurrence in the whole file, from the start) must never be
+        // depleted here. Depletion exists to stop a DIFFERENT, competing
+        // record from also claiming the SAME distinct occurrence a
+        // resolved record just used (the alpha/beta twin case) -- but a
+        // hash with only one occurrence was never competed over in the
+        // first place, so removing it only breaks a smaller, legitimately
+        // OVERLAPPING record (e.g. one documenting just this function's
+        // name and params) that resolves later and needed that exact same
+        // unique anchor to find its own, equally correct, position.
+        if ((originalPositionsByHash.get(hash)?.length ?? 0) === 1) continue;
         if (positions.some((position) => claimed.has(position))) {
           positionsByHash.set(
             hash,
@@ -970,6 +1014,29 @@ export class DocumentationService {
     const storage = this.loadStorage(repoPath, relativePath);
     const messages: Message[] = [];
 
+    // Only computed lazily, once, if any "unchanged" record actually needs
+    // it below -- checkFile's own anchor-resolution deliberately never
+    // trusts a plain identifier as an anchor (a reused name like `n` isn't
+    // reliable evidence of location), which is the right call for
+    // matchingRanges/name-derivation, but is MORE conservative than
+    // findDocumentedNodes (the thing that actually decides what Documented
+    // Sections shows), which has no such restriction and its own exact-hash
+    // re-verification to stay safe. Real bug found via live testing
+    // (2026-08-14): a record checkFile's own logic called "ambiguous" could
+    // still be showing up perfectly fine in Documented Sections (resolved
+    // there via a genuinely unique name), producing a warning that flatly
+    // contradicted what was already visible right next to it. The warning
+    // below must answer the real, observable question -- "is this actually
+    // missing from Documented Sections" -- using the exact mechanism that
+    // decides that, not a second, differently-conservative opinion.
+    let locatedRecordIds: Set<string> | null = null;
+    const isLocatedByFindDocumentedNodes = (recordId: string): boolean => {
+      if (locatedRecordIds === null) {
+        locatedRecordIds = new Set(this.findDocumentedNodes(repoPath, relativePath).map((location) => location.recordId));
+      }
+      return locatedRecordIds.has(recordId);
+    };
+
     for (const drift of report.driftResults) {
       const record = storage.records[drift.recordId];
       if (!record) continue;
@@ -1018,6 +1085,50 @@ export class DocumentationService {
           relativePath,
           recordId: drift.recordId,
           ranges: drift.matchingRanges,
+          collidesWith: drift.collidesWith,
+        });
+      } else if (!isLocatedByFindDocumentedNodes(drift.recordId)) {
+        // This is an else-if following fully_stale and partially_stale
+        // above -- drift.status is guaranteed "unchanged" by the time
+        // execution reaches here (those are the only 3 possible values),
+        // so checking it again would have been dead weight. The rule is
+        // now exactly what it should always have been: does
+        // findDocumentedNodes -- the actual, sole source of truth for what
+        // Documented Sections shows -- find this record or not. Nothing
+        // else gets a vote.
+        //
+        // Real bug found via manual testing (2026-08-13), refined via live
+        // testing (2026-08-14): a record whose content is genuinely
+        // UNCHANGED can still have nowhere reliable to point -- its own
+        // content (e.g. just a `return a / b;` sub-expression, or even a
+        // single bare `number` type keyword, no name of its own) exists
+        // identically in more than one place right now, so
+        // findDocumentedNodes can't tell them apart and silently drops it
+        // from Documented Sections, with nothing telling the user it still
+        // exists at all. Gated on findDocumentedNodes directly (the actual
+        // source of truth for what Documented Sections shows), not on
+        // whether drift.collidesWith happened to find something -- a record
+        // made entirely of leaf content can be genuinely unlocatable with an
+        // empty collidesWith too (checkFile's own anchor logic never even
+        // looks at leaf-only records the same way), and the warning still
+        // needs to fire for those. collidesWith is used only as best-effort
+        // extra detail in the text below, never as the gate itself.
+        // Deliberately NOT the drift/staleness wording above -- nothing
+        // here is stale, the record matches current code perfectly, it's
+        // just unlocatable. ranges stays empty (same as the collision case
+        // above), which is what makes the existing "Delete stale
+        // documentation" Quick Fix (gated on an empty ranges) reachable for
+        // this for free.
+        const whereText =
+          drift.collidesWith.length > 0
+            ? ` It matches identical content in more than one place in this file (${drift.collidesWith.map((c) => `"${c.name}"`).join(", ")}), so rapid-docs can't tell which one it actually documents.`
+            : " Its content isn't specific enough for rapid-docs to reliably tell where it currently lives.";
+        messages.push({
+          severity: "warning",
+          text: `${quoted} exists, but isn't showing in Documented Sections.${whereText} Use "Delete stale documentation" to remove it, or select more of the surrounding code so it includes something that sets it apart, then redocument.`,
+          relativePath,
+          recordId: drift.recordId,
+          ranges: [],
           collidesWith: drift.collidesWith,
         });
       }

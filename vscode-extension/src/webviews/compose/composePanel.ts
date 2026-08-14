@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { DocumentationService } from "../../types";
 import type { HighlightController } from "../../highlighting/highlightController";
 import type { ActiveEditorTracker } from "../../editor-interactions/activeEditorTracker";
+import type { ActivityLog } from "../../activity/activityLog";
 import { renderWebviewShell } from "../shared/webviewShell";
 
 // Set only by "Update documentation (code changed)" (7.4's context menu,
@@ -48,23 +49,22 @@ export class ComposePanel {
   private pendingDriftUpdate: PendingDriftUpdate | null = null;
   private pendingEditRecord: PendingEditRecord | null = null;
 
+  // Takes an already-created panel rather than creating one itself -- lets
+  // BOTH a brand-new panel (openOrReveal) and an already-existing one VSCode
+  // hands back after a window reload (revive, via the registered
+  // WebviewPanelSerializer) funnel through the exact same setup, instead of
+  // duplicating render()/onDidReceiveMessage/onDidDispose wiring in two
+  // places that could drift apart.
   private constructor(
+    panel: vscode.WebviewPanel,
     context: vscode.ExtensionContext,
     private readonly documentationService: DocumentationService,
     private readonly highlightController: HighlightController,
     private readonly refreshDocumentedSections: () => Promise<void>,
-    private readonly activeEditorTracker: ActiveEditorTracker
+    private readonly activeEditorTracker: ActiveEditorTracker,
+    private readonly activityLog: ActivityLog
   ) {
-    this.panel = vscode.window.createWebviewPanel(
-      "rapidDocsCompose",
-      "rapid-docs: Compose",
-      vscode.ViewColumn.Beside,
-      { enableScripts: true, retainContextWhenHidden: true }
-    );
-    // Unlike the Activity Bar icon (forced monochrome by VSCode, no
-    // exceptions), a WebviewPanel's own tab icon supports real, full color --
-    // real feedback: wanted the blue bolt specifically here.
-    this.panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "compose-icon.svg");
+    this.panel = panel;
     context.subscriptions.push(this.panel);
     this.panel.onDidDispose(() => {
       if (ComposePanel.instance === this) ComposePanel.instance = null;
@@ -82,14 +82,49 @@ export class ComposePanel {
     documentationService: DocumentationService,
     highlightController: HighlightController,
     refreshDocumentedSections: () => Promise<void>,
-    activeEditorTracker: ActiveEditorTracker
+    activeEditorTracker: ActiveEditorTracker,
+    activityLog: ActivityLog
   ): ComposePanel {
     if (ComposePanel.instance) {
       ComposePanel.instance.panel.reveal(vscode.ViewColumn.Beside);
       return ComposePanel.instance;
     }
-    ComposePanel.instance = new ComposePanel(context, documentationService, highlightController, refreshDocumentedSections, activeEditorTracker);
+    const panel = vscode.window.createWebviewPanel(
+      "rapidDocsCompose",
+      "rapid-docs: Compose",
+      vscode.ViewColumn.Beside,
+      { enableScripts: true, retainContextWhenHidden: true }
+    );
+    // Unlike the Activity Bar icon (forced monochrome by VSCode, no
+    // exceptions), a WebviewPanel's own tab icon supports real, full color --
+    // real feedback: wanted the blue bolt specifically here.
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "compose-icon.svg");
+    ComposePanel.instance = new ComposePanel(panel, context, documentationService, highlightController, refreshDocumentedSections, activeEditorTracker, activityLog);
     return ComposePanel.instance;
+  }
+
+  // Called by the registered WebviewPanelSerializer when VSCode restores a
+  // previously-open Compose tab after a window reload. Real bug found via
+  // manual testing (2026-08-15): the tab itself survives a reload, but its
+  // HTML content doesn't -- VSCode has no way to regenerate webview.html on
+  // its own, that only ever happens through this class's own render() call,
+  // which never re-ran for a revived panel without this. Deliberately
+  // revives into a fresh, blank compose state rather than trying to restore
+  // exactly what was mid-typed or which pending mode was active -- a window
+  // reload already wipes the entire extension host's memory regardless, so
+  // there was never anything left to actually recover; a working, blank
+  // panel is strictly better than a broken, empty-looking one.
+  static revive(
+    panel: vscode.WebviewPanel,
+    context: vscode.ExtensionContext,
+    documentationService: DocumentationService,
+    highlightController: HighlightController,
+    refreshDocumentedSections: () => Promise<void>,
+    activeEditorTracker: ActiveEditorTracker,
+    activityLog: ActivityLog
+  ): void {
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "compose-icon.svg");
+    ComposePanel.instance = new ComposePanel(panel, context, documentationService, highlightController, refreshDocumentedSections, activeEditorTracker, activityLog);
   }
 
   beginDriftUpdate(oldRecordId: string, relativePath: string, existingDocText: string): void {
@@ -197,8 +232,14 @@ export class ComposePanel {
     if (message.type !== "submit") return;
 
     const folder = vscode.workspace.workspaceFolders?.[0];
-    const status = (text: string, severity: "hint" | "error" | "success") =>
+    // Every hint/success/error Compose can ever show already funnels
+    // through this one function -- hooking Activity logging in here,
+    // rather than at each of the 7 individual call sites below, is what
+    // guarantees full coverage instead of an easy-to-miss subset.
+    const status = (text: string, severity: "hint" | "error" | "success") => {
+      this.activityLog[severity](text);
       void this.panel.webview.postMessage({ type: "submitResult", text, severity });
+    };
 
     if (!folder) {
       status("Open a folder first.", "hint");
