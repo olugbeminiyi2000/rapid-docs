@@ -1,6 +1,5 @@
 import * as vscode from "vscode";
-import { writeFileSync, existsSync } from "fs";
-import { tmpdir } from "os";
+import { existsSync } from "fs";
 import { join } from "path";
 import { bootstrapBackend } from "./backend/bootstrap";
 import { createDiagnosticsController, activateDiagnosticsLiveWiring } from "./diagnostics/diagnosticsController";
@@ -23,16 +22,13 @@ import { registerAllTestCommands } from "./test-commands/registerAll";
 // extension disabled, VSCode reloaded), so leaving the watcher running and
 // the Nest context open would be a genuine, real resource leak, not a
 // hypothetical one.
-let liveWatchServiceRef: { stop: () => Promise<void> } | null = null;
+// A collection, not a single ref -- multi-root support (2026-08-15): one
+// independent LiveWatchService per folder now, so deactivate() needs to
+// stop every one of them, not just one.
+let liveWatchServiceRefs: { stop: () => Promise<void> }[] = [];
 let appContextRef: { close: () => Promise<void> } | null = null;
 
-// Deliberately writes real, checkable evidence to disk instead of just
-// trusting that activation/command-execution happened -- the same "prove
-// it, don't assume it" discipline the rest of this project follows.
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
-  writeFileSync(join(tmpdir(), "rapid-docs-activation-proof.txt"), `activated at ${new Date().toISOString()}\n`);
-  console.log("rapid-docs: extension activated");
-
   const diagnosticCollection = createDiagnosticsController(context);
 
   // No native VSCode concept covers this: Diagnostics is only for problems,
@@ -50,7 +46,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const backend = await bootstrapBackend();
   appContextRef = backend.appContext;
-  liveWatchServiceRef = backend.liveWatchService;
+  // NOT backend.liveWatchService (the single shared instance) -- the real
+  // multi-root activation path below creates its own fresh instance per
+  // folder via backend.createLiveWatchService() and pushes each one onto
+  // liveWatchServiceRefs itself.
 
   const highlightController = createHighlightController(context);
   const activeEditorTracker = createActiveEditorTracker(context);
@@ -84,6 +83,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   const archiveProvider = new ArchiveViewProvider(backend.documentationService, docTextPreview, activityLog);
   context.subscriptions.push(vscode.window.registerWebviewViewProvider(ArchiveViewProvider.viewId, archiveProvider));
   void archiveProvider.refresh();
+
+  // Discoverability fix, 2026-08-16: VSCode already auto-generates a
+  // `<viewId>.focus` command for every contributed view, but it's only
+  // findable by knowing the view's own name in advance, not by searching
+  // "rapid-docs" in the Command Palette -- unlike Compose's own
+  // rapidDocs.openCompose, which already IS findable that way. These two
+  // just forward to the auto-generated ones, giving Documented Sections
+  // and Archive the same "rapid-docs: Show ..." discoverability Compose
+  // already had, for whenever the sidebar's been moved or closed.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("rapidDocs.showDocumentedSections", () =>
+      vscode.commands.executeCommand(`${DocumentedSectionsViewProvider.viewId}.focus`)
+    ),
+    vscode.commands.registerCommand("rapidDocs.showArchive", () =>
+      vscode.commands.executeCommand(`${ArchiveViewProvider.viewId}.focus`)
+    )
+  );
 
   function onActiveEditorChanged(): void {
     void documentedSectionsProvider.refresh();
@@ -153,39 +169,53 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   // electron/main.ts already used (main.ts:376-377).
   const isGitRepo = (candidatePath: string): boolean => existsSync(join(candidatePath, ".git"));
 
-  // Section 7.1 re-confirmation: this previously only ever ran via manual
-  // test commands -- a real user opening the extension got no initial
-  // Problems-panel populate and no live updates until they happened to run
-  // one themselves. See diagnosticsController.ts for the real, matching-
-  // electron/main.ts catch-up-then-watch sequence. The last argument matches
-  // electron/renderer.js's own onFilesChanged (renderer.js:1248-1259): a
-  // live edit to the file the user is ALREADY looking at (e.g. a rename)
-  // must refresh Documented Sections too, not just Problems -- confirmed
-  // missing for real (renaming a documented function left Documented
-  // Sections showing stale, pre-rename data until the user switched files
-  // away and back).
+  // Cleared ONCE, here, before the per-folder loop below -- NOT inside
+  // activateDiagnosticsLiveWiring anymore (that would wipe out an earlier
+  // folder's just-set diagnostics the moment a second folder's turn came).
+  diagnosticCollection.clear();
+
+  // Section 7.1 re-confirmation, now per folder (multi-root support,
+  // 2026-08-15): this previously only ever ran via manual test commands --
+  // a real user opening the extension got no initial Problems-panel
+  // populate and no live updates until they happened to run one
+  // themselves. See diagnosticsController.ts for the real, matching-
+  // electron/main.ts catch-up-then-watch sequence. The onFilesChanged
+  // callback matches electron/renderer.js's own onFilesChanged handler
+  // (renderer.js:1248-1259): a live edit to the file the user is ALREADY
+  // looking at (e.g. a rename) must refresh Documented Sections too, not
+  // just Problems -- confirmed missing for real (renaming a documented
+  // function left Documented Sections showing stale, pre-rename data until
+  // the user switched files away and back). This callback body doesn't
+  // need to be folder-specific itself -- it already resolves everything
+  // (archive refresh, the active editor's own relativePath) fresh each
+  // time it fires, so the exact same one is safely reused for every
+  // folder's own wiring below.
   //
   // Pulled into its own named function, not just an inline await, so it can
-  // be called from either of two places below: immediately, if the folder
-  // is already a real git repo, or later, the moment one gets initialized
-  // (git init, or VSCode's own "Initialize Repository" button) -- the exact
-  // same wiring either way, just triggered at a different time. Real, user-
-  // requested behavior (2026-08-15): a non-git folder must never throw or
-  // block the OTHER, git-independent features (Compose/Documented Sections/
-  // Archive/Activity, none of which touch GitService at all) from working
-  // immediately -- and once a repo does exist, everything git-dependent
-  // should come alive on its own, with no reload required.
-  async function startGitDependentFeatures(): Promise<void> {
-    await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, backend.liveWatchService, (relativePaths) => {
-      // Unconditional and unscoped, unlike Documented Sections below -- ANY
-      // file's deletion can add a new archive entry (handleDeletedFile),
-      // never just the currently-open one, so there's no relativePaths
-      // filtering to do here at all.
+  // be called from either of two places below: immediately, if a given
+  // folder is already a real git repo, or later, the moment one gets
+  // initialized (git init, or VSCode's own "Initialize Repository" button)
+  // -- the exact same wiring either way, just triggered at a different
+  // time. Real, user-requested behavior (2026-08-15): a non-git folder
+  // must never throw or block the OTHER, git-independent features
+  // (Compose/Documented Sections/Archive/Activity, none of which touch
+  // GitService at all) from working immediately -- and once a repo does
+  // exist, everything git-dependent should come alive on its own, with no
+  // reload required. A fresh LiveWatchService instance per folder (not the
+  // single shared backend.liveWatchService) is what makes it safe to call
+  // this once per folder at all -- see bootstrap.ts's own comment on why.
+  async function startGitDependentFeaturesForFolder(folder: vscode.WorkspaceFolder): Promise<void> {
+    const folderLiveWatchService = backend.createLiveWatchService();
+    liveWatchServiceRefs.push(folderLiveWatchService);
+
+    await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, folderLiveWatchService, folder, (relativePaths) => {
+      // Unconditional and unscoped -- ANY file's deletion, in ANY folder,
+      // can add a new archive entry (handleDeletedFile), so there's no
+      // per-folder filtering to do here at all.
       void archiveProvider.refresh();
 
       const editor = activeEditorTracker.getEditor();
-      const folder = vscode.workspace.workspaceFolders?.[0];
-      if (!editor || !folder) return;
+      if (!editor) return;
       // Normalized to forward-slash before comparing -- LiveWatchService's own
       // relativePaths always are (live-watch.service.ts:253, toRelativePath),
       // but vscode.workspace.asRelativePath returns the OS-native separator
@@ -198,31 +228,36 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     });
     // Real, visible confirmation that this actually ran -- otherwise
     // there's no way to tell "git wiring came alive" apart from "nothing
-    // happened" just by looking at the UI.
-    activityLog.success("Git repository detected. Sync and live drift-detection are now active.");
+    // happened" just by looking at the UI. Names the folder so this stays
+    // legible once more than one is involved.
+    activityLog.success(`Git repository detected in "${folder.name}". Sync and live drift-detection are now active for it.`);
   }
 
-  const startupFolder = vscode.workspace.workspaceFolders?.[0];
-  if (startupFolder && isGitRepo(startupFolder.uri.fsPath)) {
-    await startGitDependentFeatures();
-  } else if (startupFolder) {
-    // Not a git repo YET -- watch specifically for ".git" being created at
-    // the workspace root (git init, or VSCode's own Source Control panel's
-    // "Initialize Repository" button both produce this) and start the same
-    // git-dependent wiring the moment it appears, no reload needed. A
-    // native vscode.FileSystemWatcher, not chokidar -- this only ever needs
-    // to notice ONE specific path being created, not walk/watch the whole
-    // tree the way LiveWatchService's own broader watcher does.
-    const gitInitWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(startupFolder, ".git")
-    );
-    context.subscriptions.push(gitInitWatcher);
-    const disposable = gitInitWatcher.onDidCreate(() => {
-      disposable.dispose();
-      void startGitDependentFeatures();
-    });
-    context.subscriptions.push(disposable);
-    activityLog.hint("No git repository found yet. Sync and live drift-detection will activate automatically once one exists (e.g. after \"git init\").");
+  // One independent pass per folder -- each folder gets its own git-repo
+  // check, its own immediate-or-deferred activation, and (inside
+  // startGitDependentFeaturesForFolder) its own LiveWatchService instance.
+  for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    if (isGitRepo(folder.uri.fsPath)) {
+      await startGitDependentFeaturesForFolder(folder);
+    } else {
+      // Not a git repo YET -- watch specifically for ".git" being created at
+      // THIS folder's own root (git init, or VSCode's own Source Control
+      // panel's "Initialize Repository" button both produce this) and start
+      // the same git-dependent wiring the moment it appears, no reload
+      // needed. A native vscode.FileSystemWatcher, not chokidar -- this only
+      // ever needs to notice ONE specific path being created, not walk/watch
+      // the whole tree the way LiveWatchService's own broader watcher does.
+      const gitInitWatcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(folder, ".git")
+      );
+      context.subscriptions.push(gitInitWatcher);
+      const disposable = gitInitWatcher.onDidCreate(() => {
+        disposable.dispose();
+        void startGitDependentFeaturesForFolder(folder);
+      });
+      context.subscriptions.push(disposable);
+      activityLog.hint(`No git repository found yet in "${folder.name}". Sync and live drift-detection will activate automatically once one exists (e.g. after "git init").`);
+    }
   }
 
   registerAllTestCommands(context, {
@@ -243,11 +278,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 // completely empty and never caught until the parity audit specifically
 // asked "what happens on shutdown."
 export async function deactivate(): Promise<void> {
-  if (liveWatchServiceRef) {
-    await liveWatchServiceRef.stop();
-  }
+  // One per folder now (multi-root support, 2026-08-15) -- every one of
+  // them needs stopping, not just a single shared instance.
+  await Promise.all(liveWatchServiceRefs.map((ref) => ref.stop()));
+  liveWatchServiceRefs = [];
   if (appContextRef) {
     await appContextRef.close();
   }
-  writeFileSync(join(tmpdir(), "rapid-docs-deactivate-proof.txt"), `deactivated at ${new Date().toISOString()}\n`);
 }

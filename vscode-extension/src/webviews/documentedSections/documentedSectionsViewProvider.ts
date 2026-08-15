@@ -5,6 +5,7 @@ import type { HighlightController } from "../../highlighting/highlightController
 import type { ActiveEditorTracker } from "../../editor-interactions/activeEditorTracker";
 import type { DocTextPreview } from "../shared/docTextPreview";
 import type { ActivityLog } from "../../activity/activityLog";
+import { formatDisplayPath } from "../../editor-interactions/displayPath";
 import { renderWebviewShell } from "../shared/webviewShell";
 import { ComposePanel } from "../compose/composePanel";
 
@@ -208,8 +209,12 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
     // this webview shifts VSCode's focus away from the source file, the
     // same real bug found and fixed in Compose. See activeEditorTracker.ts.
     const editor = this.activeEditorTracker.getEditor();
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!editor || !folder) return;
+    if (!editor) return;
+    // getWorkspaceFolder(uri), not workspaceFolders?.[0] -- multi-root
+    // support (2026-08-15): the correct root is whichever one actually
+    // CONTAINS this file, not always the first folder in the workspace.
+    const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    if (!folder) return;
     const repoPath = folder.uri.fsPath;
     const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
 
@@ -247,7 +252,7 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
         this.activeEditorTracker,
         this.activityLog
       );
-      panel.beginEditRecord(item.recordId, item.relativePath, item.docText);
+      panel.beginEditRecord(item.recordId, item.relativePath, repoPath, item.docText);
     } else if (message.type === "delete") {
       const item = this.items.find((i) => i.recordId === message.recordId);
       if (!item) return;
@@ -265,11 +270,16 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
       );
       if (confirmed !== "Delete") return;
 
+      // formatDisplayPath, not the bare relativePath -- multi-root support
+      // (2026-08-15): shows which folder this is in, once there's more
+      // than one open. deleteRecord itself still gets the true,
+      // unprefixed relativePath.
+      const displayPath = formatDisplayPath(repoPath, relativePath);
       try {
         this.documentationService.deleteRecord(repoPath, relativePath, message.recordId);
-        this.activityLog.success(`Deleted documentation. (${relativePath})`);
+        this.activityLog.success(`Deleted documentation. (${displayPath})`);
       } catch (err) {
-        const errText = `${err instanceof Error ? err.message : String(err)} (${relativePath})`;
+        const errText = `${err instanceof Error ? err.message : String(err)} (${displayPath})`;
         this.activityLog.error(errText);
         vscode.window.showErrorMessage(`rapid-docs: ${errText}`);
       }
@@ -290,7 +300,9 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
     // into the real file. The tracker keeps pointing at the last REAL text
     // editor throughout, exactly what's needed here.
     const editor = this.activeEditorTracker.getEditor();
-    const folder = vscode.workspace.workspaceFolders?.[0];
+    // getWorkspaceFolder(uri), not workspaceFolders?.[0] -- see handleMessage's
+    // own comment above; the same multi-root correctness applies here.
+    const folder = editor ? vscode.workspace.getWorkspaceFolder(editor.document.uri) : undefined;
     if (!editor || !folder) {
       this.items = [];
     } else {

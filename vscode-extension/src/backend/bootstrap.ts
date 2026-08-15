@@ -6,7 +6,24 @@ export interface RapidDocsBackend {
   astService: AstService;
   documentationService: DocumentationService;
   syncService: SyncService;
+  // Kept for the single-shared-instance callers that already exist
+  // (test-commands, which stay single-root-scoped for now) -- NOT used by
+  // the real multi-root activation path below, which needs one independent
+  // watcher per folder instead of one shared one.
   liveWatchService: LiveWatchService;
+  // Multi-root support (2026-08-15): LiveWatchService.start(repoPath) can
+  // only ever watch ONE repo at a time -- calling it again for a different
+  // repoPath silently overwrites the internal handle, leaking the old
+  // watcher (see live-watch.service.ts's own start() comment). Getting a
+  // genuinely independent watcher per folder means NOT reusing the single
+  // NestJS-resolved singleton instance -- LiveWatchService's constructor
+  // only depends on GitService/SyncService, both already confirmed
+  // stateless (every method takes repoPath as an argument), so a fresh
+  // instance can safely be constructed directly, reusing those same shared
+  // services, without needing a second NestJS application context and
+  // without touching LiveWatchService's own @Injectable() scope in the
+  // shared src/ backend at all.
+  createLiveWatchService: () => LiveWatchService;
 }
 
 // Same dynamic-import pattern electron/main.ts's bootstrapEngine() uses, and
@@ -38,16 +55,13 @@ export async function bootstrapBackend(): Promise<RapidDocsBackend> {
   const syncService: SyncService = appContext.get(SyncServiceCtor);
   const liveWatchService: LiveWatchService = appContext.get(LiveWatchServiceCtor);
 
-  // Real evidence the whole DI graph resolved, not just one constructor --
-  // ping() and storagePathFor() are cheap, side-effect-free calls that only
-  // succeed if each service is a genuine, correctly-wired instance, not just
-  // a truthy object.
-  console.log(
-    "rapid-docs: NestJS backend context created.",
-    astService.ping(),
-    documentationService.storagePathFor(".", "probe.ts"),
-    typeof gitService.getHeadCommit
-  );
-
-  return { appContext, gitService, astService, documentationService, syncService, liveWatchService };
+  return {
+    appContext,
+    gitService,
+    astService,
+    documentationService,
+    syncService,
+    liveWatchService,
+    createLiveWatchService: () => new LiveWatchServiceCtor(gitService, syncService),
+  };
 }

@@ -3,6 +3,7 @@ import type { DocumentationService } from "../../types";
 import type { HighlightController } from "../../highlighting/highlightController";
 import type { ActiveEditorTracker } from "../../editor-interactions/activeEditorTracker";
 import type { ActivityLog } from "../../activity/activityLog";
+import { formatDisplayPath } from "../../editor-interactions/displayPath";
 import { renderWebviewShell } from "../shared/webviewShell";
 
 // Set only by "Update documentation (code changed)" (7.4's context menu,
@@ -15,6 +16,13 @@ import { renderWebviewShell } from "../shared/webviewShell";
 interface PendingDriftUpdate {
   oldRecordId: string;
   relativePath: string;
+  // Captured at the moment the pending mode is SET (when the source file
+  // is reliably known), not re-derived later from whatever editor happens
+  // to be active at submit time. Multi-root correctness (2026-08-15): a
+  // bare relativePath string alone doesn't say which root it belongs to,
+  // and the user's active editor can genuinely change between opening
+  // "Update documentation" and actually submitting.
+  repoPath: string;
 }
 
 // Set only by "Edit documentation" (the context menu's matching-record
@@ -28,6 +36,8 @@ interface PendingDriftUpdate {
 interface PendingEditRecord {
   recordId: string;
   relativePath: string;
+  // Same reasoning as PendingDriftUpdate.repoPath above.
+  repoPath: string;
 }
 
 type FromWebviewMessage = { type: "submit"; text: string };
@@ -97,8 +107,10 @@ export class ComposePanel {
     );
     // Unlike the Activity Bar icon (forced monochrome by VSCode, no
     // exceptions), a WebviewPanel's own tab icon supports real, full color --
-    // real feedback: wanted the blue bolt specifically here.
-    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "compose-icon.svg");
+    // real feedback, 2026-08-16: use the actual established brand mark (the
+    // same blue-square/white-R/yellow-bolt icon Electron already ships as
+    // icon.ico/icon-256.png), not a separately-invented bolt-only glyph.
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "compose-icon.png");
     ComposePanel.instance = new ComposePanel(panel, context, documentationService, highlightController, refreshDocumentedSections, activeEditorTracker, activityLog);
     return ComposePanel.instance;
   }
@@ -127,9 +139,9 @@ export class ComposePanel {
     ComposePanel.instance = new ComposePanel(panel, context, documentationService, highlightController, refreshDocumentedSections, activeEditorTracker, activityLog);
   }
 
-  beginDriftUpdate(oldRecordId: string, relativePath: string, existingDocText: string): void {
+  beginDriftUpdate(oldRecordId: string, relativePath: string, repoPath: string, existingDocText: string): void {
     this.pendingEditRecord = null;
-    this.pendingDriftUpdate = { oldRecordId, relativePath };
+    this.pendingDriftUpdate = { oldRecordId, relativePath, repoPath };
     void this.panel.webview.postMessage({ type: "beginDriftUpdate", docText: existingDocText });
   }
 
@@ -140,9 +152,9 @@ export class ComposePanel {
   // any separate editing UI. Doesn't need a code selection at all -- unlike
   // writeDoc/updateDriftedDoc, editDocText only ever changes the stored
   // text, never the code-matching hashes.
-  beginEditRecord(recordId: string, relativePath: string, existingDocText: string): void {
+  beginEditRecord(recordId: string, relativePath: string, repoPath: string, existingDocText: string): void {
     this.pendingDriftUpdate = null;
-    this.pendingEditRecord = { recordId, relativePath };
+    this.pendingEditRecord = { recordId, relativePath, repoPath };
     void this.panel.webview.postMessage({ type: "beginEditRecord", docText: existingDocText });
   }
 
@@ -231,7 +243,6 @@ export class ComposePanel {
   private async handleMessage(message: FromWebviewMessage): Promise<void> {
     if (message.type !== "submit") return;
 
-    const folder = vscode.workspace.workspaceFolders?.[0];
     // Every hint/success/error Compose can ever show already funnels
     // through this one function -- hooking Activity logging in here,
     // rather than at each of the 7 individual call sites below, is what
@@ -240,12 +251,6 @@ export class ComposePanel {
       this.activityLog[severity](text);
       void this.panel.webview.postMessage({ type: "submitResult", text, severity });
     };
-
-    if (!folder) {
-      status("Open a folder first.", "hint");
-      return;
-    }
-    const repoPath = folder.uri.fsPath;
 
     // One-shot, mutually exclusive: whichever pending mode is active gets
     // consumed right here, regardless of outcome, so a later, unrelated
@@ -267,12 +272,17 @@ export class ComposePanel {
     // never the code-matching hashes -- so this branch never touches
     // activeEditorTracker/the editor at all.
     if (editRecord) {
+      // formatDisplayPath, not the bare relativePath -- multi-root support
+      // (2026-08-15): shows which folder this is in, once there's more
+      // than one open. editDocText itself still gets the true, unprefixed
+      // relativePath -- only what's shown to a human changes here.
+      const editDisplayPath = formatDisplayPath(editRecord.repoPath, editRecord.relativePath);
       try {
-        this.documentationService.editDocText(repoPath, editRecord.relativePath, editRecord.recordId, message.text);
-        status(`Updated. (${editRecord.relativePath})`, "success");
+        this.documentationService.editDocText(editRecord.repoPath, editRecord.relativePath, editRecord.recordId, message.text);
+        status(`Updated. (${editDisplayPath})`, "success");
         await this.refreshDocumentedSections();
       } catch (err) {
-        status(`${err instanceof Error ? err.message : String(err)} (${editRecord.relativePath})`, "error");
+        status(`${err instanceof Error ? err.message : String(err)} (${editDisplayPath})`, "error");
       }
       return;
     }
@@ -291,22 +301,46 @@ export class ComposePanel {
       return;
     }
 
+    // getWorkspaceFolder(uri), not workspaceFolders?.[0] -- multi-root
+    // support (2026-08-15): the correct root is whichever one actually
+    // CONTAINS this file, not always the first folder in the workspace.
+    // Only needed for the fresh-write path below -- driftUpdate already
+    // carries its own repoPath, captured when beginDriftUpdate was called.
+    const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    if (!driftUpdate && !folder) {
+      status("Open a folder first.", "hint");
+      return;
+    }
+
     const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
     const start = editor.document.offsetAt(editor.selection.start);
     const end = editor.document.offsetAt(editor.selection.end);
 
+    // formatDisplayPath, not the bare relativePath -- multi-root support
+    // (2026-08-15): shows which folder this is in, once there's more than
+    // one open. Every writeDoc/updateDriftedDoc call below still gets the
+    // true, unprefixed repoPath/relativePath -- only what's shown to a
+    // human changes here. Non-null folder! in the fresh-write branch: the
+    // earlier "!driftUpdate && !folder" check already guarantees folder
+    // exists whenever driftUpdate is falsy.
+    const displayPath = driftUpdate
+      ? formatDisplayPath(driftUpdate.repoPath, driftUpdate.relativePath)
+      : formatDisplayPath(folder!.uri.fsPath, relativePath);
+
     if (!driftUpdate && start === end) {
-      status(`Select some code in the file above first. (${relativePath})`, "hint");
+      status(`Select some code in the file above first. (${displayPath})`, "hint");
       return;
     }
 
     try {
       if (driftUpdate) {
-        this.documentationService.updateDriftedDoc(repoPath, driftUpdate.relativePath, driftUpdate.oldRecordId, start, end, message.text);
-        status(`Updated documentation for changed code. (${driftUpdate.relativePath})`, "success");
+        this.documentationService.updateDriftedDoc(driftUpdate.repoPath, driftUpdate.relativePath, driftUpdate.oldRecordId, start, end, message.text);
+        status(`Updated documentation for changed code. (${displayPath})`, "success");
       } else {
-        this.documentationService.writeDoc(repoPath, relativePath, start, end, message.text);
-        status(`Documented. (${relativePath})`, "success");
+        // Non-null: the earlier "!driftUpdate && !folder" check already
+        // guarantees folder exists whenever we reach this branch.
+        this.documentationService.writeDoc(folder!.uri.fsPath, relativePath, start, end, message.text);
+        status(`Documented. (${displayPath})`, "success");
       }
       // A highlight still showing from an earlier action (e.g. the
       // now-stale diagnostic for the selection just documented) must not
@@ -320,7 +354,7 @@ export class ComposePanel {
       const friendly = /already documented as record/.test(rawMessage)
         ? "This is already documented. Use the Edit button to change its text."
         : rawMessage;
-      status(`${friendly} (${relativePath})`, "error");
+      status(`${friendly} (${displayPath})`, "error");
     }
   }
 }

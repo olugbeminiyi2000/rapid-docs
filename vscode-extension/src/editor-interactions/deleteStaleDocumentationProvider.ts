@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { DocumentationService } from "../types";
 import type { DocTextPreview } from "../webviews/shared/docTextPreview";
 import type { ActivityLog } from "../activity/activityLog";
+import { formatDisplayPath } from "./displayPath";
 
 // The native Quick Fix for deleting a stale record -- VSCode hands
 // provideCodeActions the actual vscode.Diagnostic objects at the cursor
@@ -38,7 +39,10 @@ export function registerDeleteStaleDocumentationProvider(
       );
       if (relevant.length === 0) return [];
 
-      const folder = vscode.workspace.workspaceFolders?.[0];
+      // getWorkspaceFolder(uri), not workspaceFolders?.[0] -- multi-root
+      // support (2026-08-15): the correct root is whichever one actually
+      // CONTAINS this file, not always the first folder in the workspace.
+      const folder = vscode.workspace.getWorkspaceFolder(document.uri);
       if (!folder) return [];
       const repoPath = folder.uri.fsPath;
       const relativePath = vscode.workspace.asRelativePath(document.uri, false).split(/[\\/]/).join("/");
@@ -197,11 +201,15 @@ export function registerDeleteStaleDocumentationProvider(
         );
         if (confirmed !== "Delete") return;
 
+        // formatDisplayPath, not the bare relativePath -- multi-root
+        // support (2026-08-15): shows which folder this is in, once
+        // there's more than one open.
+        const displayPath = formatDisplayPath(repoPath, relativePath);
         try {
           documentationService.deleteRecord(repoPath, relativePath, picked.recordId);
-          activityLog.success(`Deleted stale documentation. (${relativePath})`);
+          activityLog.success(`Deleted stale documentation. (${displayPath})`);
         } catch (err) {
-          const errText = `${err instanceof Error ? err.message : String(err)} (${relativePath})`;
+          const errText = `${err instanceof Error ? err.message : String(err)} (${displayPath})`;
           activityLog.error(errText);
           vscode.window.showErrorMessage(`rapid-docs: ${errText}`);
           return;

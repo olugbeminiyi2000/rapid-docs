@@ -65,12 +65,28 @@
         "title": "rapid-docs: Document selection"
       },
       {
+        "command": "rapidDocs.showDocumentedSections",
+        "title": "rapid-docs: Show Documented Sections"
+      },
+      {
+        "command": "rapidDocs.showArchive",
+        "title": "rapid-docs: Show Archive"
+      },
+      {
         "command": "rapidDocs.showEditorActions",
         "title": "rapid-docs: Actions..."
       },
       {
         "command": "rapidDocs.deleteStaleRecordFromDiagnostic",
         "title": "rapid-docs: Delete stale documentation"
+      },
+      {
+        "command": "rapidDocsDocumentedSections.focus",
+        "title": "rapid-docs: Focus on Documented Sections View"
+      },
+      {
+        "command": "rapidDocsArchive.focus",
+        "title": "rapid-docs: Focus on Archive View"
       }
     ],
     "menus": {
@@ -80,6 +96,23 @@
           "when": "editorTextFocus",
           "group": "rapidDocs@1"
         }
+      ],
+      "commandPalette": [
+        { "command": "rapidDocs.helloWorld", "when": "false" },
+        { "command": "rapidDocs.testBackend", "when": "false" },
+        { "command": "rapidDocs.testReconcile", "when": "false" },
+        { "command": "rapidDocs.testLiveWatch", "when": "false" },
+        { "command": "rapidDocs.testDiagnostics", "when": "false" },
+        { "command": "rapidDocs.testWriteDoc", "when": "false" },
+        { "command": "rapidDocs.testDecorations", "when": "false" },
+        { "command": "rapidDocs.testAstService", "when": "false" },
+        { "command": "rapidDocs.testGitService", "when": "false" },
+        { "command": "rapidDocs.testDocumentationService", "when": "false" },
+        { "command": "rapidDocs.testSyncService", "when": "false" },
+        { "command": "rapidDocs.testLiveWatchSection", "when": "false" },
+        { "command": "rapidDocs.deleteStaleRecordFromDiagnostic", "when": "false" },
+        { "command": "rapidDocsDocumentedSections.focus", "when": "false" },
+        { "command": "rapidDocsArchive.focus", "when": "false" }
       ]
     },
     "viewsContainers": {

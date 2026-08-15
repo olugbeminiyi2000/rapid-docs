@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { DocumentationService, ArchiveEntry } from "../../types";
 import type { DocTextPreview } from "../shared/docTextPreview";
 import type { ActivityLog } from "../../activity/activityLog";
+import { formatDisplayPath } from "../../editor-interactions/displayPath";
 import { renderWebviewShell } from "../shared/webviewShell";
 
 // Unlike Documented Sections, the archive is NOT scoped to the currently
@@ -11,6 +12,24 @@ import { renderWebviewShell } from "../shared/webviewShell";
 // all, and refresh() never goes blank just because focus moved to a
 // non-editor panel.
 type FromWebviewMessage = { type: "preview"; archiveId: string } | { type: "discard"; archiveId: string };
+
+// Multi-root support (2026-08-15): with more than one folder open, there
+// can be more than one separate _archive.json, one per folder -- shown
+// here as ONE combined list (simpler than a folder picker, and consistent
+// with how Documented Sections already just shows whatever's relevant),
+// with each entry tagged with the repoPath it actually came from. That tag
+// is what makes discard/preview correct per-entry instead of assuming a
+// single global folder -- a discard action for an entry from folder B must
+// never accidentally run against folder A's storage. displayPath is
+// computed once, here on the extension-host side (formatDisplayPath needs
+// vscode.workspace, not available inside the webview's own sandboxed
+// script), and sent to the webview already formatted -- the same real
+// path the Activity log now shows, per real user feedback that a bare
+// filename didn't say which folder it was in.
+interface ArchiveEntryWithFolder extends ArchiveEntry {
+  repoPath: string;
+  displayPath: string;
+}
 
 const ICON_DISCARD =
   '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>';
@@ -45,7 +64,7 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
   static readonly viewId = "rapidDocsArchive";
 
   private webviewView: vscode.WebviewView | null = null;
-  private items: ArchiveEntry[] = [];
+  private items: ArchiveEntryWithFolder[] = [];
 
   constructor(
     private readonly documentationService: DocumentationService,
@@ -94,6 +113,10 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
             const row = document.createElement('div');
             row.className = 'row';
             const truncated = item.docText.length > 60 ? item.docText.slice(0, 60) + '...' : item.docText;
+            // displayPath is already fully formatted server-side (see
+            // ArchiveEntryWithFolder above) -- formatDisplayPath needs
+            // vscode.workspace, which isn't reachable from in here.
+            const origin = item.displayPath;
             row.innerHTML =
               '<div class="row-header">' +
                 '<span class="origin"></span>' +
@@ -103,7 +126,7 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
                 '</span>' +
               '</div>' +
               '<div class="text"></div>';
-            row.querySelector('.origin').textContent = item.originalFileId;
+            row.querySelector('.origin').textContent = origin;
             row.querySelector('.text').textContent = truncated || '(no text)';
 
             row.querySelector('.preview').addEventListener('click', () => {
@@ -131,10 +154,6 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
   }
 
   private async handleMessage(message: FromWebviewMessage): Promise<void> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) return;
-    const repoPath = folder.uri.fsPath;
-
     if (message.type === "preview") {
       const item = this.items.find((i) => i.id === message.archiveId);
       if (!item) return;
@@ -142,6 +161,11 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
     } else if (message.type === "discard") {
       const item = this.items.find((i) => i.id === message.archiveId);
       if (!item) return;
+      // Each entry's OWN repoPath, not a single global folder -- multi-root
+      // support: an entry from folder B must discard against folder B's
+      // own storage, never folder A's just because it happened to be
+      // first in the workspace.
+      const repoPath = item.repoPath;
       // Same data-loss-prevention pattern as the delete-stale-documentation
       // Quick Fix -- discard is permanent, and showing the real docText
       // (not just "are you sure") is what lets someone recognize "wait,
@@ -157,9 +181,9 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
 
       try {
         this.documentationService.discardArchivedRecord(repoPath, message.archiveId);
-        this.activityLog.success(`Discarded archived documentation. (${item.originalFileId})`);
+        this.activityLog.success(`Discarded archived documentation. (${item.displayPath})`);
       } catch (err) {
-        const errText = `${err instanceof Error ? err.message : String(err)} (${item.originalFileId})`;
+        const errText = `${err instanceof Error ? err.message : String(err)} (${item.displayPath})`;
         this.activityLog.error(errText);
         vscode.window.showErrorMessage(`rapid-docs: ${errText}`);
         return;
@@ -169,8 +193,22 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
   }
 
   async refresh(): Promise<void> {
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    this.items = folder ? this.documentationService.loadArchive(folder.uri.fsPath) : [];
-    void this.webviewView?.webview.postMessage({ type: "setItems", items: this.items });
+    // One loadArchive() call per folder, combined into a single list --
+    // see the ArchiveEntryWithFolder comment above for why each entry
+    // needs to remember exactly which folder it came from.
+    this.items = (vscode.workspace.workspaceFolders ?? []).flatMap((folder) =>
+      this.documentationService.loadArchive(folder.uri.fsPath).map((entry) => ({
+        ...entry,
+        repoPath: folder.uri.fsPath,
+        // formatDisplayPath already no-ops down to the bare path in the
+        // common single-root case -- computed once here, server-side,
+        // since the webview's own script can't reach vscode.workspace.
+        displayPath: formatDisplayPath(folder.uri.fsPath, entry.originalFileId),
+      }))
+    );
+    void this.webviewView?.webview.postMessage({
+      type: "setItems",
+      items: this.items,
+    });
   }
 }

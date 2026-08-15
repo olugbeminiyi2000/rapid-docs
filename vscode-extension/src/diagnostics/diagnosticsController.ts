@@ -120,22 +120,33 @@ async function applyMessagesToDiagnostics(
 // testLiveWatch) -- a real user opening the extension got neither an
 // initial Problems-panel populate nor any live updates at all until they
 // happened to run one of those test commands themselves.
+// folder is now an explicit parameter, not resolved internally via
+// workspaceFolders?.[0] -- multi-root support (2026-08-15): this is called
+// once PER FOLDER now (see extension.ts), each with its own independent
+// LiveWatchService instance, so it needs to know exactly which folder it's
+// activating, not always assume the first one in the workspace.
+//
+// diagnosticCollection.clear() was REMOVED from here -- a real bug this
+// refactor would otherwise have introduced: with multiple folders each
+// calling this function, the second folder's clear() would wipe out the
+// first folder's diagnostics that were just set moments earlier. Clearing
+// once, up front, before the per-folder loop starts, is now the caller's
+// responsibility (extension.ts) -- this function only ever ADDS its own
+// folder's entries from here on.
 export async function activateDiagnosticsLiveWiring(
   context: vscode.ExtensionContext,
   diagnosticCollection: vscode.DiagnosticCollection,
   syncService: SyncService,
   liveWatchService: LiveWatchService,
+  folder: vscode.WorkspaceFolder,
   onFilesChanged?: (relativePaths: string[]) => void
 ): Promise<void> {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (!folder) return;
   const repoPath = folder.uri.fsPath;
 
   const syncReport = syncService.sync(repoPath);
   const reconcileReport = syncService.reconcile(repoPath);
   const catchUpMessages = dedupeMessages([...syncReport.messages, ...reconcileReport.messages]);
 
-  diagnosticCollection.clear();
   const byFile = await messagesToDiagnosticsByFile(catchUpMessages, repoPath);
   for (const [relativePath, diagnostics] of byFile) {
     diagnosticCollection.set(vscode.Uri.file(join(repoPath, relativePath)), diagnostics);

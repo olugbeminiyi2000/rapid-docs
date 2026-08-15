@@ -5,6 +5,7 @@ import type { HighlightController } from "../highlighting/highlightController";
 import type { ActiveEditorTracker } from "./activeEditorTracker";
 import type { DocTextPreview } from "../webviews/shared/docTextPreview";
 import type { ActivityLog } from "../activity/activityLog";
+import { formatDisplayPath } from "./displayPath";
 
 export interface EditorContextMenuDeps {
   documentationService: DocumentationService;
@@ -53,7 +54,10 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
       // itself has focus instead -- a different, real problem that doesn't
       // apply here.
       const editor = vscode.window.activeTextEditor;
-      const folder = vscode.workspace.workspaceFolders?.[0];
+      // getWorkspaceFolder(uri), not workspaceFolders?.[0] -- multi-root
+      // support (2026-08-15): the correct root is whichever one actually
+      // CONTAINS this file, not always the first folder in the workspace.
+      const folder = editor ? vscode.workspace.getWorkspaceFolder(editor.document.uri) : undefined;
       if (!editor || !folder || editor.selection.isEmpty) return;
 
       const repoPath = folder.uri.fsPath;
@@ -90,7 +94,7 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
               deps.activeEditorTracker,
               deps.activityLog
             );
-            panel.beginEditRecord(matchingRecord.recordId, relativePath, matchingRecord.docText);
+            panel.beginEditRecord(matchingRecord.recordId, relativePath, repoPath, matchingRecord.docText);
           },
         });
         items.push({
@@ -107,11 +111,15 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
             );
             if (confirmed !== "Delete") return;
 
+            // formatDisplayPath, not the bare relativePath -- multi-root
+            // support (2026-08-15): shows which folder this is in, once
+            // there's more than one open.
+            const displayPath = formatDisplayPath(repoPath, relativePath);
             try {
               deps.documentationService.deleteRecord(repoPath, relativePath, matchingRecord.recordId);
-              deps.activityLog.success(`Deleted documentation. (${relativePath})`);
+              deps.activityLog.success(`Deleted documentation. (${displayPath})`);
             } catch (err) {
-              const message = `${err instanceof Error ? err.message : String(err)} (${relativePath})`;
+              const message = `${err instanceof Error ? err.message : String(err)} (${displayPath})`;
               deps.activityLog.error(message);
               vscode.window.showErrorMessage(`rapid-docs: ${message}`);
               return;
@@ -132,7 +140,7 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
                 deps.activeEditorTracker,
                 deps.activityLog
               );
-              panel.beginDriftUpdate(staleRecord.recordId, relativePath, staleRecord.docText);
+              panel.beginDriftUpdate(staleRecord.recordId, relativePath, repoPath, staleRecord.docText);
             },
           });
         }
@@ -199,11 +207,15 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
               });
               if (!picked) return;
 
+              // formatDisplayPath, not the bare relativePath -- multi-root
+              // support (2026-08-15): shows which folder this is in, once
+              // there's more than one open.
+              const attachDisplayPath = formatDisplayPath(repoPath, relativePath);
               try {
                 deps.documentationService.attachArchivedRecord(repoPath, picked.archiveId, relativePath, start, end);
-                deps.activityLog.success(`Attached archived documentation. (${relativePath})`);
+                deps.activityLog.success(`Attached archived documentation. (${attachDisplayPath})`);
               } catch (err) {
-                const message = `${err instanceof Error ? err.message : String(err)} (${relativePath})`;
+                const message = `${err instanceof Error ? err.message : String(err)} (${attachDisplayPath})`;
                 deps.activityLog.error(message);
                 vscode.window.showErrorMessage(`rapid-docs: ${message}`);
                 return;
