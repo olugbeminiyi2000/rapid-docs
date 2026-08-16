@@ -13,6 +13,18 @@ import { renderWebviewShell } from "../shared/webviewShell";
 // null the rest of the time, which is what keeps "Document Selection"
 // behaving exactly as normal for the ordinary, no-drift-involved case.
 // Matches electron/renderer.js's own pendingDriftUpdate (renderer.js:129).
+//
+// start/end added 2026-08-16, a real bug found via manual testing: this
+// used to carry no position at all, and the submit handler read
+// activeEditorTracker's LIVE selection at submit time instead -- meaning
+// if the user did anything with their selection between opening "Update
+// documentation" and actually clicking submit (even something as ordinary
+// as selecting a different line to copy it), the update silently got
+// anchored to whatever was selected AT SUBMIT TIME, not the code that was
+// actually highlighted when Update was invoked. The selection is real and
+// known the moment the menu item is chosen (registerEditorContextMenu.ts
+// already refuses to even show the menu without one), so it's captured
+// here, once, instead of re-read later.
 interface PendingDriftUpdate {
   oldRecordId: string;
   relativePath: string;
@@ -23,6 +35,8 @@ interface PendingDriftUpdate {
   // and the user's active editor can genuinely change between opening
   // "Update documentation" and actually submitting.
   repoPath: string;
+  start: number;
+  end: number;
 }
 
 // Set only by "Edit documentation" (the context menu's matching-record
@@ -40,7 +54,24 @@ interface PendingEditRecord {
   repoPath: string;
 }
 
-type FromWebviewMessage = { type: "submit"; text: string };
+// New 2026-08-16, the fresh-write counterpart to PendingDriftUpdate's own
+// start/end fix above -- "Document selection" used to carry NO captured
+// target at all, relying entirely on activeEditorTracker's live selection
+// at submit time, which is exactly the same silent-misattachment risk:
+// select code, open Compose, go back and select something else (even just
+// to copy it), and the documentation would attach to the SECOND selection
+// with zero warning. null specifically means "nothing was captured yet"
+// (e.g. the bare Command Palette command with no prior selection) --
+// submit falls back to reading the live selection only in that one case,
+// preserving the "open blank, then select, then submit" flow.
+interface PendingWrite {
+  relativePath: string;
+  repoPath: string;
+  start: number;
+  end: number;
+}
+
+type FromWebviewMessage = { type: "submit"; text: string } | { type: "draftChanged"; hasText: boolean };
 
 const STYLE = `
   body { display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
@@ -58,6 +89,21 @@ export class ComposePanel {
   private readonly panel: vscode.WebviewPanel;
   private pendingDriftUpdate: PendingDriftUpdate | null = null;
   private pendingEditRecord: PendingEditRecord | null = null;
+  private pendingWrite: PendingWrite | null = null;
+  // Mirrors the webview's OWN textarea state exactly (updated only by real
+  // "draftChanged" reports from the client, never guessed or reset from
+  // the extension-host side) -- the single source of truth confirmDiscard-
+  // IfNeeded checks before letting any begin*/reset method silently blow
+  // away real, unsaved text. Deliberately NOT reset when a pending mode is
+  // consumed at submit time -- a FAILED submit leaves the text sitting in
+  // the textarea untouched, and it needs to stay protected until the
+  // client itself reports it changed.
+  private hasDraftText = false;
+  // Human-readable label for whatever hasDraftText is currently protecting
+  // -- only ever read inside the discard-confirmation prompt, and only
+  // ever written by a begin*/resetToFresh call that itself just passed
+  // that same confirmation, so it never needs proactive resetting.
+  private currentLabel = "the current draft";
 
   // Takes an already-created panel rather than creating one itself -- lets
   // BOTH a brand-new panel (openOrReveal) and an already-existing one VSCode
@@ -135,13 +181,45 @@ export class ComposePanel {
     activeEditorTracker: ActiveEditorTracker,
     activityLog: ActivityLog
   ): void {
-    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "compose-icon.svg");
+    panel.iconPath = vscode.Uri.joinPath(context.extensionUri, "resources", "compose-icon.png");
     ComposePanel.instance = new ComposePanel(panel, context, documentationService, highlightController, refreshDocumentedSections, activeEditorTracker, activityLog);
   }
 
-  beginDriftUpdate(oldRecordId: string, relativePath: string, repoPath: string, existingDocText: string): void {
+  // Real UX gap found via manual testing (2026-08-16): Compose is reused
+  // across separate targets (openOrReveal never creates a second panel), so
+  // triggering a new Document/Update/Edit action while a real, unsaved draft
+  // was already sitting in the textarea used to discard it completely
+  // silently -- no warning, the earlier target's in-progress text just
+  // vanished the moment the new one was set. Every begin*/reset method below
+  // funnels through this one check first: if there's real unsaved text,
+  // confirm before discarding it -- the same "show what's about to be lost,
+  // require an explicit click" pattern already used for every permanent-
+  // deletion path in this extension. Returns false (caller must bail out,
+  // leaving the panel untouched) only when the user explicitly declines.
+  private async confirmDiscardIfNeeded(newLabel: string): Promise<boolean> {
+    if (!this.hasDraftText) return true;
+    const confirmed = await vscode.window.showWarningMessage(
+      `You have an unfinished draft for ${this.currentLabel}.`,
+      { modal: true, detail: `Discard it and document ${newLabel} instead?` },
+      "Discard and Continue"
+    );
+    return confirmed === "Discard and Continue";
+  }
+
+  async beginDriftUpdate(
+    oldRecordId: string,
+    relativePath: string,
+    repoPath: string,
+    start: number,
+    end: number,
+    existingDocText: string
+  ): Promise<void> {
+    const label = formatDisplayPath(repoPath, relativePath);
+    if (!(await this.confirmDiscardIfNeeded(label))) return;
     this.pendingEditRecord = null;
-    this.pendingDriftUpdate = { oldRecordId, relativePath, repoPath };
+    this.pendingWrite = null;
+    this.pendingDriftUpdate = { oldRecordId, relativePath, repoPath, start, end };
+    this.currentLabel = label;
     void this.panel.webview.postMessage({ type: "beginDriftUpdate", docText: existingDocText });
   }
 
@@ -152,16 +230,36 @@ export class ComposePanel {
   // any separate editing UI. Doesn't need a code selection at all -- unlike
   // writeDoc/updateDriftedDoc, editDocText only ever changes the stored
   // text, never the code-matching hashes.
-  beginEditRecord(recordId: string, relativePath: string, repoPath: string, existingDocText: string): void {
+  async beginEditRecord(recordId: string, relativePath: string, repoPath: string, existingDocText: string): Promise<void> {
+    const label = formatDisplayPath(repoPath, relativePath);
+    if (!(await this.confirmDiscardIfNeeded(label))) return;
     this.pendingDriftUpdate = null;
+    this.pendingWrite = null;
     this.pendingEditRecord = { recordId, relativePath, repoPath };
+    this.currentLabel = label;
     void this.panel.webview.postMessage({ type: "beginEditRecord", docText: existingDocText });
   }
 
   private clearPendingModes(): void {
     this.pendingDriftUpdate = null;
     this.pendingEditRecord = null;
+    this.pendingWrite = null;
     void this.panel.webview.postMessage({ type: "clearPendingModes" });
+  }
+
+  // The target-aware counterpart to resetToFresh, below -- used whenever a
+  // real selection is already known (the editor context menu's "Document
+  // selection" item, and the Command Palette command when something's
+  // currently selected), so the eventual submit uses THIS captured
+  // start/end rather than re-reading the editor's selection live.
+  async beginFreshWrite(repoPath: string, relativePath: string, start: number, end: number): Promise<void> {
+    const label = formatDisplayPath(repoPath, relativePath);
+    if (!(await this.confirmDiscardIfNeeded(label))) return;
+    this.pendingDriftUpdate = null;
+    this.pendingEditRecord = null;
+    this.pendingWrite = { repoPath, relativePath, start, end };
+    this.currentLabel = label;
+    void this.panel.webview.postMessage({ type: "resetFresh" });
   }
 
   // Real bug found via manual testing: opening Compose "fresh" for a
@@ -173,10 +271,16 @@ export class ComposePanel {
   // though the actual submit logic was already correctly routed to writeDoc,
   // not updateDriftedDoc. Unlike clearPendingModes (label only), this also
   // clears the textarea and any leftover status message -- a genuinely
-  // fresh start, not just a relabeled button.
-  resetToFresh(): void {
+  // fresh start, not just a relabeled button. No target is known yet here
+  // (unlike beginFreshWrite) -- submit falls back to reading the editor's
+  // live selection, the same "open blank, then select, then submit" flow
+  // that worked before this session's capture-at-open fix.
+  async resetToFresh(): Promise<void> {
+    if (!(await this.confirmDiscardIfNeeded("a new selection"))) return;
     this.pendingDriftUpdate = null;
     this.pendingEditRecord = null;
+    this.pendingWrite = null;
+    this.currentLabel = "the current draft";
     void this.panel.webview.postMessage({ type: "resetFresh" });
   }
 
@@ -196,6 +300,14 @@ export class ComposePanel {
         const statusEl = document.getElementById('status');
         let statusClearTimeout = null;
 
+        // The extension host's own source of truth for "is there real,
+        // unsaved text right now" -- sent on every real change, typed OR
+        // programmatic, so confirmDiscardIfNeeded never has to guess.
+        function reportDraft() {
+          vscode.postMessage({ type: 'draftChanged', hasText: textEl.value.trim().length > 0 });
+        }
+        textEl.addEventListener('input', reportDraft);
+
         buttonEl.addEventListener('click', () => {
           vscode.postMessage({ type: 'submit', text: textEl.value });
         });
@@ -206,10 +318,12 @@ export class ComposePanel {
             textEl.value = message.docText;
             buttonEl.textContent = 'Update Documentation';
             textEl.focus();
+            reportDraft();
           } else if (message.type === 'beginEditRecord') {
             textEl.value = message.docText;
             buttonEl.textContent = 'Save Changes';
             textEl.focus();
+            reportDraft();
           } else if (message.type === 'clearPendingModes') {
             buttonEl.textContent = 'Document Selection';
           } else if (message.type === 'resetFresh') {
@@ -218,12 +332,14 @@ export class ComposePanel {
             buttonEl.textContent = 'Document Selection';
             statusEl.textContent = '';
             statusEl.className = '';
+            reportDraft();
           } else if (message.type === 'submitResult') {
             if (statusClearTimeout) clearTimeout(statusClearTimeout);
             statusEl.textContent = message.text;
             statusEl.className = message.severity;
             if (message.severity === 'success') {
               textEl.value = '';
+              reportDraft();
               // Matches electron/renderer.js's own setStatus(autoClearMs)
               // design exactly: success fades on its own since the real
               // confirmation (the new row in Documented Sections) is
@@ -241,7 +357,13 @@ export class ComposePanel {
   }
 
   private async handleMessage(message: FromWebviewMessage): Promise<void> {
-    if (message.type !== "submit") return;
+    // The client's own report of "is there real text in the textarea right
+    // now" -- see hasDraftText's own comment for why this is never guessed
+    // or reset from this side.
+    if (message.type === "draftChanged") {
+      this.hasDraftText = message.hasText;
+      return;
+    }
 
     // Every hint/success/error Compose can ever show already funnels
     // through this one function -- hooking Activity logging in here,
@@ -257,9 +379,14 @@ export class ComposePanel {
     // submission can never accidentally be redirected into finishing
     // something it was never actually about. Matches electron/renderer.js's
     // own reasoning for pendingDriftUpdate (renderer.js:954-959), extended
-    // to the same one-shot treatment for editRecord.
+    // to the same one-shot treatment for editRecord/write. Deliberately does
+    // NOT touch hasDraftText -- a FAILED submit below leaves the textarea's
+    // real text untouched, and it must stay protected until the client
+    // itself reports a real change, not just because a pending mode was
+    // consumed.
     const editRecord = this.pendingEditRecord;
     const driftUpdate = this.pendingDriftUpdate;
+    const write = this.pendingWrite;
     this.clearPendingModes();
 
     if (!message.text.trim()) {
@@ -287,65 +414,86 @@ export class ComposePanel {
       return;
     }
 
-    // NOT vscode.window.activeTextEditor -- clicking anything inside this
-    // panel (a webview, not a text editor) shifts VSCode's own focus away
-    // from the source file, so by the time this message handler runs,
-    // activeTextEditor is undefined even though a file genuinely IS open
-    // with a real selection. Real bug found via manual testing: this
-    // reported "Open a file first." on every submit. The tracker's
-    // TextEditor object stays valid and its .selection stays live-accurate
-    // even after it stops being VSCode's "active" one.
-    const editor = this.activeEditorTracker.getEditor();
-    if (!editor) {
-      status("Open a file first.", "hint");
-      return;
-    }
+    // Captured target (driftUpdate/write) takes priority -- it's the whole
+    // point of this session's capture-at-open fix, real evidence a user hit:
+    // going back into the editor for any reason (even just selecting some
+    // code to copy it) between opening Compose and clicking submit used to
+    // silently redirect the documentation to whatever was selected AT
+    // SUBMIT TIME instead of what was actually highlighted when the action
+    // was invoked. The live editor/selection read below is now only a
+    // fallback for the one legitimate case nothing was captured yet: Compose
+    // opened via the bare Command Palette command with no prior selection,
+    // where "open blank, then select, then submit" is still the intended
+    // flow.
+    let repoPath: string;
+    let relativePath: string;
+    let start: number;
+    let end: number;
 
-    // getWorkspaceFolder(uri), not workspaceFolders?.[0] -- multi-root
-    // support (2026-08-15): the correct root is whichever one actually
-    // CONTAINS this file, not always the first folder in the workspace.
-    // Only needed for the fresh-write path below -- driftUpdate already
-    // carries its own repoPath, captured when beginDriftUpdate was called.
-    const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
-    if (!driftUpdate && !folder) {
-      status("Open a folder first.", "hint");
-      return;
-    }
+    if (driftUpdate) {
+      repoPath = driftUpdate.repoPath;
+      relativePath = driftUpdate.relativePath;
+      start = driftUpdate.start;
+      end = driftUpdate.end;
+    } else if (write) {
+      repoPath = write.repoPath;
+      relativePath = write.relativePath;
+      start = write.start;
+      end = write.end;
+    } else {
+      // NOT vscode.window.activeTextEditor -- clicking anything inside this
+      // panel (a webview, not a text editor) shifts VSCode's own focus away
+      // from the source file, so by the time this message handler runs,
+      // activeTextEditor is undefined even though a file genuinely IS open
+      // with a real selection. Real bug found via manual testing: this
+      // reported "Open a file first." on every submit. The tracker's
+      // TextEditor object stays valid and its .selection stays live-accurate
+      // even after it stops being VSCode's "active" one.
+      const editor = this.activeEditorTracker.getEditor();
+      if (!editor) {
+        status("Open a file first.", "hint");
+        return;
+      }
 
-    const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
-    const start = editor.document.offsetAt(editor.selection.start);
-    const end = editor.document.offsetAt(editor.selection.end);
+      // getWorkspaceFolder(uri), not workspaceFolders?.[0] -- multi-root
+      // support (2026-08-15): the correct root is whichever one actually
+      // CONTAINS this file, not always the first folder in the workspace.
+      const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+      if (!folder) {
+        status("Open a folder first.", "hint");
+        return;
+      }
+
+      repoPath = folder.uri.fsPath;
+      relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
+      start = editor.document.offsetAt(editor.selection.start);
+      end = editor.document.offsetAt(editor.selection.end);
+    }
 
     // formatDisplayPath, not the bare relativePath -- multi-root support
     // (2026-08-15): shows which folder this is in, once there's more than
     // one open. Every writeDoc/updateDriftedDoc call below still gets the
     // true, unprefixed repoPath/relativePath -- only what's shown to a
-    // human changes here. Non-null folder! in the fresh-write branch: the
-    // earlier "!driftUpdate && !folder" check already guarantees folder
-    // exists whenever driftUpdate is falsy.
-    const displayPath = driftUpdate
-      ? formatDisplayPath(driftUpdate.repoPath, driftUpdate.relativePath)
-      : formatDisplayPath(folder!.uri.fsPath, relativePath);
+    // human changes here.
+    const displayPath = formatDisplayPath(repoPath, relativePath);
 
-    if (!driftUpdate && start === end) {
+    if (start === end) {
       status(`Select some code in the file above first. (${displayPath})`, "hint");
       return;
     }
 
     try {
       if (driftUpdate) {
-        this.documentationService.updateDriftedDoc(driftUpdate.repoPath, driftUpdate.relativePath, driftUpdate.oldRecordId, start, end, message.text);
+        this.documentationService.updateDriftedDoc(repoPath, relativePath, driftUpdate.oldRecordId, start, end, message.text);
         status(`Updated documentation for changed code. (${displayPath})`, "success");
       } else {
-        // Non-null: the earlier "!driftUpdate && !folder" check already
-        // guarantees folder exists whenever we reach this branch.
-        this.documentationService.writeDoc(folder!.uri.fsPath, relativePath, start, end, message.text);
+        this.documentationService.writeDoc(repoPath, relativePath, start, end, message.text);
         status(`Documented. (${displayPath})`, "success");
       }
       // A highlight still showing from an earlier action (e.g. the
       // now-stale diagnostic for the selection just documented) must not
       // linger past the point it stopped being accurate.
-      this.highlightController.clear(editor);
+      this.highlightController.clear(this.activeEditorTracker.getEditor());
       await this.refreshDocumentedSections();
     } catch (err) {
       const rawMessage = err instanceof Error ? err.message : String(err);

@@ -3,12 +3,31 @@
   "displayName": "rapid-docs",
   "description": "AST-based, git-native documentation drift detection, inside the editor.",
   "version": "0.0.1",
-  "private": true,
+  "license": "MIT",
+  "icon": "resources/marketplace-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/olugbeminiyi2000/rapid-docs.git",
+    "directory": "vscode-extension"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
-  "activationEvents": ["onStartupFinished", "onWebviewPanel:rapidDocsCompose"],
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "documentation",
+    "drift-detection",
+    "AST",
+    "git",
+    "typescript",
+    "javascript"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onWebviewPanel:rapidDocsCompose"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -98,21 +117,66 @@
         }
       ],
       "commandPalette": [
-        { "command": "rapidDocs.helloWorld", "when": "false" },
-        { "command": "rapidDocs.testBackend", "when": "false" },
-        { "command": "rapidDocs.testReconcile", "when": "false" },
-        { "command": "rapidDocs.testLiveWatch", "when": "false" },
-        { "command": "rapidDocs.testDiagnostics", "when": "false" },
-        { "command": "rapidDocs.testWriteDoc", "when": "false" },
-        { "command": "rapidDocs.testDecorations", "when": "false" },
-        { "command": "rapidDocs.testAstService", "when": "false" },
-        { "command": "rapidDocs.testGitService", "when": "false" },
-        { "command": "rapidDocs.testDocumentationService", "when": "false" },
-        { "command": "rapidDocs.testSyncService", "when": "false" },
-        { "command": "rapidDocs.testLiveWatchSection", "when": "false" },
-        { "command": "rapidDocs.deleteStaleRecordFromDiagnostic", "when": "false" },
-        { "command": "rapidDocsDocumentedSections.focus", "when": "false" },
-        { "command": "rapidDocsArchive.focus", "when": "false" }
+        {
+          "command": "rapidDocs.helloWorld",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testBackend",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testReconcile",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testLiveWatch",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testDiagnostics",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testWriteDoc",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testDecorations",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testAstService",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testGitService",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testDocumentationService",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testSyncService",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.testLiveWatchSection",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocs.deleteStaleRecordFromDiagnostic",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocsDocumentedSections.focus",
+          "when": "false"
+        },
+        {
+          "command": "rapidDocsArchive.focus",
+          "when": "false"
+        }
       ]
     },
     "viewsContainers": {
@@ -140,11 +204,16 @@
     }
   },
   "scripts": {
-    "compile": "tsc -p ./"
+    "build-backend": "npm run --prefix .. build",
+    "check-types": "tsc --noEmit -p ./",
+    "compile": "npm run build-backend && npm run check-types && node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "npm run build-backend && npm run check-types && node esbuild.js --production"
   },
   "devDependencies": {
-    "@types/vscode": "^1.85.0",
     "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.4.0"
   }
 }

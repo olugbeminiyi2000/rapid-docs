@@ -85,7 +85,7 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
           // redirect into Documented Sections' own (now-removed) inline
           // <input> edit, a cramped, bad fit for anything long or
           // multi-line. No DOM to reuse anymore; this IS the real surface.
-          run: () => {
+          run: async () => {
             const panel = ComposePanel.openOrReveal(
               context,
               deps.documentationService,
@@ -94,7 +94,7 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
               deps.activeEditorTracker,
               deps.activityLog
             );
-            panel.beginEditRecord(matchingRecord.recordId, relativePath, repoPath, matchingRecord.docText);
+            await panel.beginEditRecord(matchingRecord.recordId, relativePath, repoPath, matchingRecord.docText);
           },
         });
         items.push({
@@ -131,7 +131,7 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
         if (staleRecord) {
           items.push({
             label: "Update documentation (code changed)",
-            run: () => {
+            run: async () => {
               const panel = ComposePanel.openOrReveal(
                 context,
                 deps.documentationService,
@@ -140,13 +140,18 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
                 deps.activeEditorTracker,
                 deps.activityLog
               );
-              panel.beginDriftUpdate(staleRecord.recordId, relativePath, repoPath, staleRecord.docText);
+              // start/end captured HERE, at the moment this menu item is
+              // chosen -- see PendingDriftUpdate's own header for the real
+              // bug this fixes (submit used to re-read whatever was
+              // selected at CLICK time instead, silently misattaching the
+              // update if the selection changed in between).
+              await panel.beginDriftUpdate(staleRecord.recordId, relativePath, repoPath, start, end, staleRecord.docText);
             },
           });
         }
         items.push({
           label: "Document selection",
-          run: () => {
+          run: async () => {
             const panel = ComposePanel.openOrReveal(
               context,
               deps.documentationService,
@@ -155,7 +160,10 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
               deps.activeEditorTracker,
               deps.activityLog
             );
-            panel.resetToFresh();
+            // Same capture-at-open fix as Update documentation above --
+            // start/end are already known here (the menu never even shows
+            // without a real, non-empty selection).
+            await panel.beginFreshWrite(repoPath, relativePath, start, end);
           },
         });
 

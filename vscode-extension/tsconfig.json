@@ -2,12 +2,17 @@
   "compilerOptions": {
     "module": "commonjs",
     "target": "ES2022",
-    "outDir": "dist",
-    "rootDir": "src",
     "strict": true,
-    "sourceMap": true,
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "noEmit": true,
+    // bootstrap.ts imports the root project's own compiled dist/*.js
+    // directly (see its own header comment for why) -- allowJs lets tsc
+    // resolve those .js imports for type-checking purposes; they have no
+    // companion .d.ts (root's own tsconfig.json doesn't emit declarations),
+    // so they type-check as `any`, same as the old @ts-expect-error-suppressed
+    // dynamic-import version effectively did.
+    "allowJs": true
   },
   "exclude": ["node_modules", "dist", "playground"]
 }

@@ -67,7 +67,7 @@ export interface GitService {
     from: string,
     to: string
   ): { added: string[]; modified: string[]; deleted: string[]; renamed: { from: string; to: string }[] };
-  compareContent(a: string, b: string): number | null;
+  compareContent(a: string, b: string): { similarity: number } | null;
 }
 
 export interface AstService {

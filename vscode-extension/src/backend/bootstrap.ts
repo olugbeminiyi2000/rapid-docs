@@ -1,3 +1,33 @@
+import { NestFactory } from "@nestjs/core";
+// Compiled dist/*.js, not raw src/*.ts -- real finding 2026-08-16, confirmed
+// via an isolated minimal reproduction, not assumed: esbuild correctly
+// APPLIES legacy decorators (@Injectable() itself gets transpiled fine), but
+// does not implement TypeScript's emitDecoratorMetadata AT ALL -- a real,
+// long-standing, deliberate limitation of esbuild itself (esbuild's own
+// maintainer has publicly declined to add best-effort support, citing
+// correctness concerns from not being a real type checker), not a tsconfig
+// or build-option mistake. Without design:paramtypes metadata, NestJS's
+// constructor-based DI has nothing to resolve dependencies from, and every
+// injected constructor parameter silently comes back undefined -- confirmed
+// live: "Cannot read properties of undefined (reading 'getHeadCommit')" on
+// activation, traced to SyncService.gitService never actually being set.
+// tsc (via the root project's own existing `npm run build`) DOES emit this
+// metadata correctly, so it's what actually transforms these decorator-heavy
+// files -- esbuild.js then bundles the ALREADY-COMPILED JS output below, a
+// plain static import of valid JS with no TS-specific transform needed at
+// all, which is a completely different thing from the OLD, now-removed
+// dynamic import() of this same dist/ output: that was a workaround for a
+// CommonJS/ESM boundary at RUNTIME, in a version of this file that never got
+// bundled at all. This one gets fully inlined into dist/extension.js at
+// BUILD time, so the packaged extension has no separate dist/ dependency
+// left over either way -- both original problems (no metadata under esbuild,
+// no self-contained package) stay fixed at once.
+import { AppModule } from "../../../dist/app.module.js";
+import { GitService as GitServiceCtor } from "../../../dist/git/git.service.js";
+import { AstService as AstServiceCtor } from "../../../dist/ast/ast.service.js";
+import { DocumentationService as DocumentationServiceCtor } from "../../../dist/ast/documentation.service.js";
+import { SyncService as SyncServiceCtor } from "../../../dist/sync/sync.service.js";
+import { LiveWatchService as LiveWatchServiceCtor } from "../../../dist/sync/live-watch.service.js";
 import type { AstService, DocumentationService, GitService, LiveWatchService, SyncService } from "../types";
 
 export interface RapidDocsBackend {
@@ -26,42 +56,35 @@ export interface RapidDocsBackend {
   createLiveWatchService: () => LiveWatchService;
 }
 
-// Same dynamic-import pattern electron/main.ts's bootstrapEngine() uses, and
-// for the same reason: dist/app.module.js is a real ES module (root
-// package.json says "type": "module"), and this file compiles to CommonJS,
-// so require() can't load it directly -- only a dynamic import() can bridge
-// a CommonJS file to a genuine ESM one. The relative path depth is identical
-// too: vscode-extension/dist/backend/bootstrap.js sits exactly as many
-// levels under the repo root as electron/dist/main.js does.
 export async function bootstrapBackend(): Promise<RapidDocsBackend> {
-  const { NestFactory } = await import("@nestjs/core");
-  // @ts-expect-error -- dist/ is a separately-compiled, untyped JS output, same boundary electron/main.ts already crosses
-  const { AppModule } = await import("../../../dist/app.module.js");
-  // @ts-expect-error -- see above
-  const { GitService: GitServiceCtor } = await import("../../../dist/git/git.service.js");
-  // @ts-expect-error -- see above
-  const { AstService: AstServiceCtor } = await import("../../../dist/ast/ast.service.js");
-  // @ts-expect-error -- see above
-  const { DocumentationService: DocumentationServiceCtor } = await import("../../../dist/ast/documentation.service.js");
-  // @ts-expect-error -- see above
-  const { SyncService: SyncServiceCtor } = await import("../../../dist/sync/sync.service.js");
-  // @ts-expect-error -- see above
-  const { LiveWatchService: LiveWatchServiceCtor } = await import("../../../dist/sync/live-watch.service.js");
-
   const appContext = await NestFactory.createApplicationContext(AppModule, { logger: false });
-  const gitService: GitService = appContext.get(GitServiceCtor);
-  const astService: AstService = appContext.get(AstServiceCtor);
-  const documentationService: DocumentationService = appContext.get(DocumentationServiceCtor);
-  const syncService: SyncService = appContext.get(SyncServiceCtor);
-  const liveWatchService: LiveWatchService = appContext.get(LiveWatchServiceCtor);
+  // Deliberately left as their INFERRED type here (whatever TypeScript's own
+  // allowJs analysis of the compiled .js derives), not annotated with the
+  // structural types from ../types -- createLiveWatchService below needs to
+  // hand the REAL gitService/syncService instances to LiveWatchServiceCtor's
+  // own constructor, which expects that real (inferred) shape, not the
+  // narrower structural view of it.
+  const gitService = appContext.get(GitServiceCtor);
+  const astService = appContext.get(AstServiceCtor);
+  const documentationService = appContext.get(DocumentationServiceCtor);
+  const syncService = appContext.get(SyncServiceCtor);
+  const liveWatchService = appContext.get(LiveWatchServiceCtor);
 
   return {
     appContext,
-    gitService,
-    astService,
-    documentationService,
-    syncService,
-    liveWatchService,
+    // Cast to the structural types explicitly here, at the return boundary
+    // only -- allowJs's inference from plain compiled JS (no source .ts,
+    // no .d.ts) is real but imprecise (e.g. widens a literal union like
+    // "info" | "warning" | "error" to plain string), close enough to be
+    // useful but not exact enough to satisfy a strict structural assignment
+    // check. The REST of the extension only ever consumes these through the
+    // ../types interfaces anyway, so this is the one place that needs to
+    // bridge "real but imprecise" into "our own precise contract".
+    gitService: gitService as unknown as GitService,
+    astService: astService as unknown as AstService,
+    documentationService: documentationService as unknown as DocumentationService,
+    syncService: syncService as unknown as SyncService,
+    liveWatchService: liveWatchService as unknown as LiveWatchService,
     createLiveWatchService: () => new LiveWatchServiceCtor(gitService, syncService),
   };
 }

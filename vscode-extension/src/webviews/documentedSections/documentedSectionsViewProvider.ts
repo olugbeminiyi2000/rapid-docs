@@ -252,7 +252,7 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
         this.activeEditorTracker,
         this.activityLog
       );
-      panel.beginEditRecord(item.recordId, item.relativePath, repoPath, item.docText);
+      await panel.beginEditRecord(item.recordId, item.relativePath, repoPath, item.docText);
     } else if (message.type === "delete") {
       const item = this.items.find((i) => i.recordId === message.recordId);
       if (!item) return;
