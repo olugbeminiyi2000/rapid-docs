@@ -68,6 +68,8 @@ Not yet on the Marketplace. Install the packaged extension directly:
 1. Download the latest `.vsix` from [Releases](../../releases).
 2. In VS Code: Extensions view -> **"..."** menu -> **Install from VSIX...** -> pick the downloaded file.
 
+![The Extensions view's "..." menu, showing the Install from VSIX... option](vscode-extension/resources/rapid-docs-install-using-vsix.png)
+
 To build it yourself instead:
 
 ```bash
