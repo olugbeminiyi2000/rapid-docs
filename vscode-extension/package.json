@@ -2,7 +2,7 @@
   "name": "rapid-docs-vscode",
   "displayName": "rapid-docs",
   "description": "AST-based, git-native documentation drift detection, inside the editor.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "EmmanuelObolo",
   "license": "MIT",
   "icon": "resources/marketplace-icon.png",

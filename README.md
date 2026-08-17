@@ -16,7 +16,7 @@
 
 AST-based, git-native documentation drift detection: hand-written documentation that stays attached to code *structure*, not to line numbers. A note you write for a function stays correct even after the function moves, gets reformatted, or has code added around it, and gets flagged the moment the code it actually describes changes underneath it.
 
-> **Status: the [VS Code extension](vscode-extension/) is now the primary way to use rapid-docs (v0.1.0).** The original Electron desktop app (v0.1.0) is deprecated in favor of it -- kept in this repo for reference, not actively developed further. Both share the same underlying NestJS/AST backend. Not yet on the VS Code Marketplace (pending an account issue on the publishing side); in the meantime, install it from a packaged `.vsix` -- see [Getting started](#getting-started) below.
+> **Status: the [VS Code extension](vscode-extension/) is now the primary way to use rapid-docs.** The original Electron desktop app (v0.1.0) is deprecated in favor of it -- kept in this repo for reference, not actively developed further. Both share the same underlying NestJS/AST backend. Not yet on the VS Code Marketplace (pending an account issue on the publishing side); in the meantime, install it from a packaged `.vsix` -- see [Releases](../../releases) for the current version and [Getting started](#getting-started) below for install steps.
 
 ## Screenshots
 
