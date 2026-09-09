@@ -4,6 +4,7 @@ import type { DocTextPreview } from "../shared/docTextPreview";
 import type { ActivityLog } from "../../activity/activityLog";
 import { formatDisplayPath } from "../../editor-interactions/displayPath";
 import { renderWebviewShell } from "../shared/webviewShell";
+import { truncateForConfirmDialog } from "../shared/confirmDialogText";
 
 // Unlike Documented Sections, the archive is NOT scoped to the currently
 // open file -- loadArchive(repoPath) returns every archived record
@@ -174,7 +175,7 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
       // structure VSCode's own native confirm dialogs use.
       const confirmed = await vscode.window.showWarningMessage(
         "Permanently discard this archived documentation? This cannot be undone.",
-        { modal: true, detail: `"${item.docText}"` },
+        { modal: true, detail: `"${truncateForConfirmDialog(item.docText)}"` },
         "Discard"
       );
       if (confirmed !== "Discard") return;

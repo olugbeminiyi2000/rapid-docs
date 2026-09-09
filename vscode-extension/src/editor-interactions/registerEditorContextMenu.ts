@@ -6,6 +6,7 @@ import type { ActiveEditorTracker } from "./activeEditorTracker";
 import type { DocTextPreview } from "../webviews/shared/docTextPreview";
 import type { ActivityLog } from "../activity/activityLog";
 import { formatDisplayPath } from "./displayPath";
+import { truncateForConfirmDialog } from "../webviews/shared/confirmDialogText";
 
 export interface EditorContextMenuDeps {
   documentationService: DocumentationService;
@@ -106,7 +107,7 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
             // one just because it's a menu item instead of an icon.
             const confirmed = await vscode.window.showWarningMessage(
               "Permanently delete this documentation? This cannot be undone.",
-              { modal: true, detail: `"${matchingRecord.docText}"` },
+              { modal: true, detail: `"${truncateForConfirmDialog(matchingRecord.docText)}"` },
               "Delete"
             );
             if (confirmed !== "Delete") return;

@@ -6,6 +6,7 @@ import type { ActiveEditorTracker } from "../../editor-interactions/activeEditor
 import type { DocTextPreview } from "../shared/docTextPreview";
 import type { ActivityLog } from "../../activity/activityLog";
 import { formatDisplayPath } from "../../editor-interactions/displayPath";
+import { truncateForConfirmDialog } from "../shared/confirmDialogText";
 import { renderWebviewShell } from "../shared/webviewShell";
 import { ComposePanel } from "../compose/composePanel";
 
@@ -265,7 +266,7 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
       // an explicit "Delete" click, not just "are you sure".
       const confirmed = await vscode.window.showWarningMessage(
         "Permanently delete this documentation? This cannot be undone.",
-        { modal: true, detail: `"${item.docText}"` },
+        { modal: true, detail: `"${truncateForConfirmDialog(item.docText)}"` },
         "Delete"
       );
       if (confirmed !== "Delete") return;

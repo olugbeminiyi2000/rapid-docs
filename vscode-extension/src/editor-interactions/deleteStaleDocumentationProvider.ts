@@ -3,6 +3,7 @@ import type { DocumentationService } from "../types";
 import type { DocTextPreview } from "../webviews/shared/docTextPreview";
 import type { ActivityLog } from "../activity/activityLog";
 import { formatDisplayPath } from "./displayPath";
+import { truncateForConfirmDialog } from "../webviews/shared/confirmDialogText";
 
 // The native Quick Fix for deleting a stale record -- VSCode hands
 // provideCodeActions the actual vscode.Diagnostic objects at the cursor
@@ -196,7 +197,7 @@ export function registerDeleteStaleDocumentationProvider(
         // underlying native mechanism as, not a custom one.
         const confirmed = await vscode.window.showWarningMessage(
           "Permanently delete this documentation? This cannot be undone.",
-          { modal: true, detail: `"${docText}"` },
+          { modal: true, detail: `"${truncateForConfirmDialog(docText)}"` },
           "Delete"
         );
         if (confirmed !== "Delete") return;
