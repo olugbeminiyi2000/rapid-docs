@@ -157,7 +157,7 @@ export function registerDeleteStaleDocumentationProvider(
           quickPick.items = items;
           quickPick.placeholder = "Select the stale documentation to delete";
           quickPick.onDidTriggerItemButton((e) => {
-            void docTextPreview.show(e.item.docText, e.item.recordId.slice(0, 8));
+            void docTextPreview.show(e.item.docText, e.item.recordId.slice(0, 8), repoPath);
           });
           quickPick.onDidAccept(() => {
             resolve(quickPick.selectedItems[0]);

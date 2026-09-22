@@ -202,7 +202,7 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
                 quickPick.items = pickerItems;
                 quickPick.placeholder = "Select an archived record to attach to this selection";
                 quickPick.onDidTriggerItemButton((e) => {
-                  void deps.docTextPreview.show(e.item.docText, e.item.archiveId.slice(0, 8));
+                  void deps.docTextPreview.show(e.item.docText, e.item.archiveId.slice(0, 8), repoPath);
                 });
                 quickPick.onDidAccept(() => {
                   resolve(quickPick.selectedItems[0]);

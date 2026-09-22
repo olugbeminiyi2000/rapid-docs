@@ -116,6 +116,26 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     )
   );
 
+  // Real, native onboarding, not custom UI: VSCode auto-shows a newly
+  // installed extension's own contributed walkthrough (package.json's
+  // "walkthroughs") on first install, using the SAME screenshots already in
+  // the extension's own README -- see PARITY-CHECKLIST.md for the full
+  // reasoning. This command is just the "come back to it later" path
+  // (Command Palette, discoverable by searching "rapid-docs", same
+  // convention as showDocumentedSections/showArchive above), for whenever
+  // someone dismissed the auto-shown one and wants to see it again.
+  // context.extension.id, not a hardcoded "EmmanuelObolo.rapid-docs-vscode"
+  // string -- the real, canonical publisher.name VSCode itself resolved
+  // this extension to, so it can never drift out of sync with package.json.
+  context.subscriptions.push(
+    vscode.commands.registerCommand("rapidDocs.showGettingStarted", () =>
+      vscode.commands.executeCommand(
+        "workbench.action.openWalkthrough",
+        `${context.extension.id}#rapidDocsGettingStarted`
+      )
+    )
+  );
+
   function onActiveEditorChanged(): void {
     void documentedSectionsProvider.refresh();
   }

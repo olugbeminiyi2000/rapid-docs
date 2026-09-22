@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { isAbsolute, relative, basename, sep } from "path";
 import type { DocumentationService } from "../../types";
 import type { HighlightController } from "../../highlighting/highlightController";
 import type { ActiveEditorTracker } from "../../editor-interactions/activeEditorTracker";
@@ -71,7 +72,15 @@ interface PendingWrite {
   end: number;
 }
 
-type FromWebviewMessage = { type: "submit"; text: string } | { type: "draftChanged"; hasText: boolean };
+type FromWebviewMessage =
+  | { type: "submit"; text: string }
+  | { type: "draftChanged"; hasText: boolean }
+  // 2026-09-22: lets someone insert a real image or file reference from
+  // this workspace without hand-typing a relative path. "image"/"file" are
+  // markdown's own two distinct reference shapes -- an image embeds inline
+  // (![alt](path)), a file is just a clickable link ([name](path)) -- so
+  // this stays two buttons/kinds, not one generic "insert" that guesses.
+  | { type: "insertMedia"; kind: "image" | "file" };
 
 const STYLE = `
   body { display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
@@ -82,6 +91,16 @@ const STYLE = `
   #status.error { color: var(--vscode-errorForeground); }
   #status.success { color: var(--vscode-terminal-ansiGreen, var(--vscode-foreground)); }
   #status.hint { color: var(--vscode-descriptionForeground); }
+  #toolbar { display: flex; gap: 6px; margin-bottom: 6px; }
+  #toolbar button {
+    background: transparent;
+    border: 1px solid var(--vscode-button-border, var(--vscode-widget-border, transparent));
+    color: var(--vscode-foreground);
+    padding: 3px 8px;
+    font-size: 0.9em;
+    border-radius: 3px;
+  }
+  #toolbar button:hover { background: var(--vscode-toolbar-hoverBackground); }
 `;
 
 export class ComposePanel {
@@ -290,6 +309,10 @@ export class ComposePanel {
       title: "rapid-docs: Compose",
       extraStyle: STYLE,
       bodyHtml: `
+        <div id="toolbar">
+          <button id="insert-image-button" title="Insert an image from this workspace">Insert Image...</button>
+          <button id="insert-file-button" title="Insert a file link from this workspace">Insert File...</button>
+        </div>
         <textarea id="doc-text" placeholder="Select some code in the file, then describe it here..."></textarea>
         <div id="status"></div>
         <button id="submit-button">Document Selection</button>
@@ -298,7 +321,16 @@ export class ComposePanel {
         const textEl = document.getElementById('doc-text');
         const buttonEl = document.getElementById('submit-button');
         const statusEl = document.getElementById('status');
+        const insertImageBtn = document.getElementById('insert-image-button');
+        const insertFileBtn = document.getElementById('insert-file-button');
         let statusClearTimeout = null;
+
+        insertImageBtn.addEventListener('click', () => {
+          vscode.postMessage({ type: 'insertMedia', kind: 'image' });
+        });
+        insertFileBtn.addEventListener('click', () => {
+          vscode.postMessage({ type: 'insertMedia', kind: 'file' });
+        });
 
         // The extension host's own source of truth for "is there real,
         // unsaved text right now" -- sent on every real change, typed OR
@@ -350,6 +382,20 @@ export class ComposePanel {
                 statusEl.className = '';
               }, 4000);
             }
+          } else if (message.type === 'insertSnippet') {
+            // Inserted at whatever the CURRENT cursor position is when this
+            // response arrives, not one captured back when the toolbar
+            // button was clicked -- the native file-picker dialog is
+            // modal, so the textarea's own selection can't have changed in
+            // between anyway, and this is simpler and more robust than
+            // threading a stale position through the round trip.
+            const start = textEl.selectionStart;
+            const end = textEl.selectionEnd;
+            textEl.value = textEl.value.slice(0, start) + message.text + textEl.value.slice(end);
+            const newPos = start + message.text.length;
+            textEl.selectionStart = textEl.selectionEnd = newPos;
+            textEl.focus();
+            reportDraft();
           }
         });
       `,
@@ -362,6 +408,15 @@ export class ComposePanel {
     // or reset from this side.
     if (message.type === "draftChanged") {
       this.hasDraftText = message.hasText;
+      return;
+    }
+
+    // Deliberately handled BEFORE the "consume pending modes" logic below --
+    // inserting a reference must never touch pendingDriftUpdate/
+    // pendingEditRecord/pendingWrite, which still need to be there, intact,
+    // for whatever the eventual real submit turns out to be.
+    if (message.type === "insertMedia") {
+      await this.insertMediaReference(message.kind);
       return;
     }
 
@@ -504,5 +559,82 @@ export class ComposePanel {
         : rawMessage;
       status(`${friendly} (${displayPath})`, "error");
     }
+  }
+
+  // Same priority order the real submit path above uses for repoPath --
+  // whichever captured target is actually pending takes priority (matches
+  // what the eventual submit will use, so "insert a file" and "document
+  // this" always agree on which folder they mean), falling back to
+  // whatever folder the tracked active editor is in for a genuinely
+  // untargeted, fresh Compose session.
+  private currentRepoPathForInsert(): string | null {
+    if (this.pendingDriftUpdate) return this.pendingDriftUpdate.repoPath;
+    if (this.pendingEditRecord) return this.pendingEditRecord.repoPath;
+    if (this.pendingWrite) return this.pendingWrite.repoPath;
+    const editor = this.activeEditorTracker.getEditor();
+    if (!editor) return null;
+    const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    return folder ? folder.uri.fsPath : null;
+  }
+
+  // Real feature request (2026-09-22): a docText copied in from a
+  // standalone Markdown file with working relative image references
+  // showed nothing once previewed through rapid-docs (see
+  // resolveDocTextMedia.ts's own header for the full root cause and the
+  // preview-time fix). This is the other half: let someone actually INSERT
+  // a real reference correctly in the first place, via VSCode's own native
+  // file picker, rather than hand-typing a relative path that's easy to
+  // get wrong.
+  //
+  // The picker's defaultUri is only a starting-directory HINT -- VSCode
+  // does not stop someone from browsing anywhere else on their filesystem
+  // from there, so the real security boundary (same one
+  // resolveDocTextMedia.ts enforces for PREVIEWING) is re-checked here
+  // too, independently, for INSERTING: the picked file must be a genuine
+  // descendant of repoPath, never above it or absolute to somewhere else,
+  // otherwise the inserted reference could never resolve for any other
+  // collaborator anyway, and would only "work" by accident on this one
+  // machine.
+  private async insertMediaReference(kind: "image" | "file"): Promise<void> {
+    const repoPath = this.currentRepoPathForInsert();
+    if (!repoPath) {
+      void vscode.window.showWarningMessage("rapid-docs: open a file first, so rapid-docs knows which folder to insert relative to.");
+      return;
+    }
+
+    const picked = await vscode.window.showOpenDialog({
+      defaultUri: vscode.Uri.file(repoPath),
+      canSelectMany: false,
+      openLabel: kind === "image" ? "Insert Image" : "Insert File",
+      filters: kind === "image" ? { Images: ["png", "jpg", "jpeg", "gif", "svg", "webp"] } : undefined,
+    });
+    if (!picked || picked.length === 0) return;
+
+    const pickedPath = picked[0].fsPath;
+    const rel = relative(repoPath, pickedPath);
+    const isDescendant = rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+    if (!isDescendant) {
+      void vscode.window.showErrorMessage(
+        "rapid-docs: only files inside this workspace folder can be inserted, so the reference stays portable for every collaborator who clones the repo."
+      );
+      return;
+    }
+
+    // Forward-slash normalized, matching the same convention already used
+    // everywhere else a relativePath is stored (e.g. live-watch.service.ts's
+    // toRelativePath) -- a stored backslash path would only ever resolve
+    // correctly on Windows, breaking for every other collaborator.
+    const relPosix = rel.split(sep).join("/");
+    const name = basename(pickedPath);
+    // Wrapped in <...> -- real CommonMark syntax specifically for this: a
+    // bare `(path)` destination breaks the moment the path itself contains
+    // an unescaped space or parenthesis (the parser reads the FIRST `)` it
+    // finds as the link's end, not the real one), which is exactly what a
+    // real downloaded file's filename can easily contain (confirmed live:
+    // a PDF named "... (Jay Wengrow) (z-library.sk...).pdf" produced a
+    // syntactically broken link with the un-escaped version). Angle
+    // brackets are the standard, spec-defined escape for this, not a hack.
+    const snippet = kind === "image" ? `![${name}](<${relPosix}>)` : `[${name}](<${relPosix}>)`;
+    void this.panel.webview.postMessage({ type: "insertSnippet", text: snippet });
   }
 }

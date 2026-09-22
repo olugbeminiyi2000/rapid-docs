@@ -288,7 +288,7 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
     } else if (message.type === "preview") {
       const item = this.items.find((i) => i.recordId === message.recordId);
       if (!item) return;
-      await this.docTextPreview.show(item.docText, message.recordId.slice(0, 8));
+      await this.docTextPreview.show(item.docText, message.recordId.slice(0, 8), repoPath);
     }
   }
 

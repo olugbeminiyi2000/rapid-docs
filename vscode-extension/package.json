@@ -2,7 +2,7 @@
   "name": "rapid-docs-vscode",
   "displayName": "rapid-docs",
   "description": "AST-based, git-native documentation drift detection, inside the editor.",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "publisher": "EmmanuelObolo",
   "license": "MIT",
   "icon": "resources/marketplace-icon.png",
@@ -107,6 +107,10 @@
       {
         "command": "rapidDocsArchive.focus",
         "title": "rapid-docs: Focus on Archive View"
+      },
+      {
+        "command": "rapidDocs.showGettingStarted",
+        "title": "rapid-docs: Show Getting Started"
       }
     ],
     "menus": {
@@ -202,7 +206,82 @@
           "type": "webview"
         }
       ]
-    }
+    },
+    "walkthroughs": [
+      {
+        "id": "rapidDocsGettingStarted",
+        "title": "Get Started with rapid-docs",
+        "description": "Documentation that stays attached to your code's real structure, not a line number.",
+        "steps": [
+          {
+            "id": "documentSelection",
+            "title": "Document any selection",
+            "description": "Select code, then run **rapid-docs: Document selection** from the Command Palette or right-click menu. Write your explanation in the Compose panel that opens beside your code.\n[Document selection](command:rapidDocs.openCompose)",
+            "media": {
+              "image": "resources/rapid-docs-document-selection.png",
+              "altText": "Command Palette showing Document selection, with Problems listing undocumented and drifted code"
+            },
+            "completionEvents": ["onCommand:rapidDocs.openCompose"]
+          },
+          {
+            "id": "rightClickActions",
+            "title": "Right-click for quick actions",
+            "description": "Select any code and right-click for **rapid-docs: Actions...**, listed right alongside VS Code's own native menu items.",
+            "media": {
+              "image": "resources/rapid-docs-rapid-actions.png",
+              "altText": "Editor right-click menu with rapid-docs: Actions... listed among native entries"
+            },
+            "completionEvents": ["onCommand:rapidDocs.showEditorActions"]
+          },
+          {
+            "id": "editDelete",
+            "title": "Edit or delete existing documentation",
+            "description": "Select already-documented code to Edit its text or Delete it, both with a confirmation before anything is lost for good.",
+            "media": {
+              "image": "resources/rapid-docs-rapid-actions-edit-delete.png",
+              "altText": "QuickPick showing Edit documentation and Delete documentation"
+            }
+          },
+          {
+            "id": "driftDetection",
+            "title": "Live drift detection",
+            "description": "Change documented code and save: drift shows up directly in VS Code's native Problems panel the moment you save, no custom UI.",
+            "media": {
+              "image": "resources/rapid-docs-problem-panel-info-warning.png",
+              "altText": "Problems panel showing a warning and info messages, with a highlighted code region"
+            }
+          },
+          {
+            "id": "updateDrifted",
+            "title": "Update stale documentation",
+            "description": "Select drifted code and choose **Update documentation (code changed)** to replace the old, stale record with a fresh one.",
+            "media": {
+              "image": "resources/rapid-docs-update-docs-drifted-code.png",
+              "altText": "QuickPick showing Update documentation (code changed) and Document selection"
+            }
+          },
+          {
+            "id": "archive",
+            "title": "Archive: your writing is never lost",
+            "description": "Delete a documented file and its documentation isn't gone, it moves to Archive, where you can preview it, discard it for good, or re-attach it to different code later.\n[Show Archive](command:rapidDocs.showArchive)",
+            "media": {
+              "image": "resources/rapid-docs-archive.png",
+              "altText": "Archive view listing archived records with folder-qualified paths"
+            },
+            "completionEvents": ["onCommand:rapidDocs.showArchive"]
+          },
+          {
+            "id": "markdownPreview",
+            "title": "Documentation, written in real Markdown",
+            "description": "Write your documentation in Markdown, headings, code blocks, tables, and preview it rendered exactly that way, through VS Code's own Markdown Preview.",
+            "media": {
+              "image": "resources/rapid-docs-markdown-preview.png",
+              "altText": "A docText written in Markdown, rendered with headings, a table, and code blocks"
+            }
+          }
+        ]
+      }
+    ]
   },
   "scripts": {
     "build-backend": "npm run --prefix .. build",

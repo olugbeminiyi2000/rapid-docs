@@ -158,7 +158,7 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
     if (message.type === "preview") {
       const item = this.items.find((i) => i.id === message.archiveId);
       if (!item) return;
-      await this.docTextPreview.show(item.docText, item.id.slice(0, 8));
+      await this.docTextPreview.show(item.docText, item.id.slice(0, 8), item.repoPath);
     } else if (message.type === "discard") {
       const item = this.items.find((i) => i.id === message.archiveId);
       if (!item) return;
