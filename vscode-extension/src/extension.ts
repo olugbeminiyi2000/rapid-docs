@@ -14,6 +14,8 @@ import { createActiveEditorTracker } from "./editor-interactions/activeEditorTra
 import { registerComposeCommands } from "./webviews/compose/registerComposeCommands";
 import { registerEditorContextMenu } from "./editor-interactions/registerEditorContextMenu";
 import { registerAllTestCommands } from "./test-commands/registerAll";
+import { isExcluded } from "./diagnostics/fileExclusions";
+import { toggleFileExclusionAndRefresh, syncActiveFileExclusionContext } from "./diagnostics/toggleFileExclusion";
 
 // Module-scoped (not local to activate()) specifically so deactivate() can
 // reach them for real cleanup -- electron/main.ts never had to solve this,
@@ -138,9 +140,52 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   function onActiveEditorChanged(): void {
     void documentedSectionsProvider.refresh();
+    // Keeps the Documented Sections title-bar toggle icon's own visibility
+    // current for WHICHEVER file just became active -- without this, the
+    // icon would keep showing the previous file's state after switching.
+    void syncActiveFileExclusionContext(context, vscode.window.activeTextEditor);
   }
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(onActiveEditorChanged));
   onActiveEditorChanged();
+
+  // Section 7.8 (2026-10-10): the per-file enable/disable toggle's second
+  // entry point, a title-bar icon in Documented Sections -- see
+  // toggleFileExclusion.ts's own header for why both this and the editor
+  // context menu's own toggle item call the exact same shared function
+  // rather than each keeping their own copy of what a toggle has to do.
+  // Two commands, not one, because a single toolbar button can't relabel
+  // itself -- VSCode's own native pattern for a state-reflecting toggle
+  // button is two commands with complementary `when` clauses on a context
+  // key (package.json's view/title), so exactly one of the two is ever
+  // visible at a time, whichever matches the file's real current state.
+  // activeEditorTracker, not vscode.window.activeTextEditor -- this command
+  // is invoked FROM the Documented Sections webview's own title bar, which
+  // means the webview has focus at that exact moment, not a real text
+  // editor; activeTextEditor would already be stale/undefined here, the
+  // exact same reason Documented Sections' own refresh logic already needs
+  // the tracker instead.
+  async function toggleForActiveFile(): Promise<void> {
+    const editor = activeEditorTracker.getEditor();
+    if (!editor) {
+      void vscode.window.showWarningMessage("rapid-docs: open a file first, so rapid-docs knows which file to toggle.");
+      return;
+    }
+    const folder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    if (!folder) return;
+    await toggleFileExclusionAndRefresh(
+      context,
+      diagnosticCollection,
+      backend.documentationService,
+      activityLog,
+      folder.uri.fsPath,
+      vscode.workspace.asRelativePath(editor.document.uri, false),
+      editor.document.uri
+    );
+  }
+  context.subscriptions.push(
+    vscode.commands.registerCommand("rapidDocs.disableForActiveFile", toggleForActiveFile),
+    vscode.commands.registerCommand("rapidDocs.enableForActiveFile", toggleForActiveFile)
+  );
 
   // 7.1 rebuild, step 2 (2026-08-11), now the ONLY Problems mechanism
   // (2026-08-12): native VSCode Problems panel + this position-based
@@ -188,6 +233,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     refreshArchive: () => archiveProvider.refresh(),
     docTextPreview,
     activityLog,
+    diagnosticCollection,
   });
 
   // Section 7.7: real, confirmed gap -- unlike electron/main.ts (which
@@ -246,24 +292,33 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
       disposeGitInitWatcher: null,
     });
 
-    await activateDiagnosticsLiveWiring(context, diagnosticCollection, backend.syncService, folderLiveWatchService, folder, (relativePaths) => {
-      // Unconditional and unscoped -- ANY file's deletion, in ANY folder,
-      // can add a new archive entry (handleDeletedFile), so there's no
-      // per-folder filtering to do here at all.
-      void archiveProvider.refresh();
+    const repoPath = folder.uri.fsPath;
+    await activateDiagnosticsLiveWiring(
+      context,
+      diagnosticCollection,
+      backend.syncService,
+      folderLiveWatchService,
+      folder,
+      (relativePath) => isExcluded(context.workspaceState, repoPath, relativePath),
+      (relativePaths) => {
+        // Unconditional and unscoped -- ANY file's deletion, in ANY folder,
+        // can add a new archive entry (handleDeletedFile), so there's no
+        // per-folder filtering to do here at all.
+        void archiveProvider.refresh();
 
-      const editor = activeEditorTracker.getEditor();
-      if (!editor) return;
-      // Normalized to forward-slash before comparing -- LiveWatchService's own
-      // relativePaths always are (live-watch.service.ts:253, toRelativePath),
-      // but vscode.workspace.asRelativePath returns the OS-native separator
-      // (backslash on Windows) by default. A plain .includes() would silently
-      // never match on Windows otherwise -- the exact same class of bug
-      // already found and fixed once in live-watch.service.ts itself
-      // (chokidar's forward-slash paths vs. path.join's native ones).
-      const currentRelativePath = vscode.workspace.asRelativePath(editor.document.uri, false).split(/[\\/]/).join("/");
-      if (relativePaths.includes(currentRelativePath)) void documentedSectionsProvider.refresh();
-    });
+        const editor = activeEditorTracker.getEditor();
+        if (!editor) return;
+        // Normalized to forward-slash before comparing -- LiveWatchService's own
+        // relativePaths always are (live-watch.service.ts:253, toRelativePath),
+        // but vscode.workspace.asRelativePath returns the OS-native separator
+        // (backslash on Windows) by default. A plain .includes() would silently
+        // never match on Windows otherwise -- the exact same class of bug
+        // already found and fixed once in live-watch.service.ts itself
+        // (chokidar's forward-slash paths vs. path.join's native ones).
+        const currentRelativePath = vscode.workspace.asRelativePath(editor.document.uri, false).split(/[\\/]/).join("/");
+        if (relativePaths.includes(currentRelativePath)) void documentedSectionsProvider.refresh();
+      }
+    );
     // Real, visible confirmation that this actually ran -- otherwise
     // there's no way to tell "git wiring came alive" apart from "nothing
     // happened" just by looking at the UI. Names the folder so this stays

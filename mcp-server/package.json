@@ -1,0 +1,40 @@
+{
+  "name": "rapid-docs-mcp-server",
+  "version": "0.1.1",
+  "description": "MCP server exposing rapid-docs' documentation actions as tools for AI coding agents (starting with Claude Code).",
+  "main": "dist/index.js",
+  "bin": {
+    "rapid-docs-mcp-server": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build-backend": "npm run --prefix .. build",
+    "check-types": "tsc --noEmit -p ./",
+    "build": "npm run build-backend && npm run check-types && node esbuild.js",
+    "start": "node dist/index.js"
+  },
+  "author": "Emmanuel Obolo",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olugbeminiyi2000/rapid-docs.git",
+    "directory": "mcp-server"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "rapid-docs",
+    "claude-code",
+    "documentation"
+  ],
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "@types/node": "^20.11.0",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.4.0",
+    "zod": "^3.24.0",
+    "zod-to-json-schema": "^3.25.1"
+  }
+}

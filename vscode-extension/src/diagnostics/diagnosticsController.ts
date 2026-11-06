@@ -1,6 +1,6 @@
 import * as vscode from "vscode";
 import { join } from "path";
-import type { RapidDocsMessage, SyncService, LiveWatchService } from "../types";
+import type { RapidDocsMessage, SyncService, LiveWatchService, DocumentationService } from "../types";
 
 const SEVERITY_MAP: Record<RapidDocsMessage["severity"], vscode.DiagnosticSeverity> = {
   error: vscode.DiagnosticSeverity.Error,
@@ -103,12 +103,36 @@ async function applyMessagesToDiagnostics(
   diagnosticCollection: vscode.DiagnosticCollection,
   repoPath: string,
   relativePaths: string[],
-  messages: RapidDocsMessage[]
+  messages: RapidDocsMessage[],
+  isPathExcluded: (relativePath: string) => boolean
 ): Promise<void> {
   const byFile = await messagesToDiagnosticsByFile(messages, repoPath);
   for (const relativePath of relativePaths) {
-    diagnosticCollection.set(vscode.Uri.file(join(repoPath, relativePath)), byFile.get(relativePath) ?? []);
+    const diagnostics = isPathExcluded(relativePath) ? [] : byFile.get(relativePath) ?? [];
+    diagnosticCollection.set(vscode.Uri.file(join(repoPath, relativePath)), diagnostics);
   }
+}
+
+// The toggle's own "turn this file back on" path: re-run the exact same
+// check-then-populate step the catch-up loop below does for every file at
+// activation, but for just the one file being re-enabled, so its squiggles
+// come back immediately instead of waiting for the next live edit.
+export async function refreshDiagnosticsForFile(
+  diagnosticCollection: vscode.DiagnosticCollection,
+  documentationService: DocumentationService,
+  repoPath: string,
+  relativePath: string,
+  isPathExcluded: (relativePath: string) => boolean
+): Promise<void> {
+  const uri = vscode.Uri.file(join(repoPath, relativePath));
+  if (isPathExcluded(relativePath)) {
+    diagnosticCollection.set(uri, []);
+    return;
+  }
+  const report = documentationService.checkFile(repoPath, relativePath);
+  const messages = documentationService.generateMessages(repoPath, relativePath, report);
+  const byFile = await messagesToDiagnosticsByFile(messages, repoPath);
+  diagnosticCollection.set(uri, byFile.get(relativePath) ?? []);
 }
 
 // Matches electron/main.ts's activateRepo() exactly (main.ts:491-517): run
@@ -139,6 +163,7 @@ export async function activateDiagnosticsLiveWiring(
   syncService: SyncService,
   liveWatchService: LiveWatchService,
   folder: vscode.WorkspaceFolder,
+  isPathExcluded: (relativePath: string) => boolean,
   onFilesChanged?: (relativePaths: string[]) => void
 ): Promise<void> {
   const repoPath = folder.uri.fsPath;
@@ -149,7 +174,10 @@ export async function activateDiagnosticsLiveWiring(
 
   const byFile = await messagesToDiagnosticsByFile(catchUpMessages, repoPath);
   for (const [relativePath, diagnostics] of byFile) {
-    diagnosticCollection.set(vscode.Uri.file(join(repoPath, relativePath)), diagnostics);
+    diagnosticCollection.set(
+      vscode.Uri.file(join(repoPath, relativePath)),
+      isPathExcluded(relativePath) ? [] : diagnostics
+    );
   }
 
   // start() doesn't guard against an already-running watcher itself (see
@@ -171,7 +199,7 @@ export async function activateDiagnosticsLiveWiring(
   // this signal (every file this batch is the current, complete state for);
   // it just never reached anything but diagnostics before this.
   const listener = (relativePaths: string[], messages: RapidDocsMessage[]) => {
-    void applyMessagesToDiagnostics(diagnosticCollection, repoPath, relativePaths, messages);
+    void applyMessagesToDiagnostics(diagnosticCollection, repoPath, relativePaths, messages, isPathExcluded);
     onFilesChanged?.(relativePaths);
   };
   liveWatchService.on("messages", listener);

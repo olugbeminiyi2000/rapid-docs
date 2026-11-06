@@ -1,1 +1,3 @@
-const totallyUnrelatedThing = { foo: 1, bar: "hello" };
+const totallyUnrelatedThing = { foo: 1, bar: "Emmanuel" };
+
+const nonrelated = "non related"

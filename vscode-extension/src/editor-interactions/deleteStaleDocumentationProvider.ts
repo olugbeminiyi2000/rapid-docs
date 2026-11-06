@@ -109,6 +109,10 @@ export function registerDeleteStaleDocumentationProvider(
     iconPath: new vscode.ThemeIcon("eye"),
     tooltip: "Preview full documentation",
   };
+  const copyButton: vscode.QuickInputButton = {
+    iconPath: new vscode.ThemeIcon("copy"),
+    tooltip: "Copy to clipboard",
+  };
 
   context.subscriptions.push(
     vscode.commands.registerCommand(
@@ -148,7 +152,7 @@ export function registerDeleteStaleDocumentationProvider(
             description: `(${m.severity})`,
             recordId: m.recordId!,
             docText,
-            buttons: [previewButton],
+            buttons: [previewButton, copyButton],
           };
         });
 
@@ -157,6 +161,11 @@ export function registerDeleteStaleDocumentationProvider(
           quickPick.items = items;
           quickPick.placeholder = "Select the stale documentation to delete";
           quickPick.onDidTriggerItemButton((e) => {
+            if (e.button === copyButton) {
+              void vscode.env.clipboard.writeText(e.item.docText);
+              vscode.window.setStatusBarMessage("rapid-docs: Copied to clipboard", 2000);
+              return;
+            }
             void docTextPreview.show(e.item.docText, e.item.recordId.slice(0, 8), repoPath);
           });
           quickPick.onDidAccept(() => {

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "rapid-docs": {
+      "command": "npx",
+      "args": ["-y", "rapid-docs-mcp-server"]
+    }
+  }
+}

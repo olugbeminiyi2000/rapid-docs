@@ -7,6 +7,8 @@ import type { DocTextPreview } from "../webviews/shared/docTextPreview";
 import type { ActivityLog } from "../activity/activityLog";
 import { formatDisplayPath } from "./displayPath";
 import { truncateForConfirmDialog } from "../webviews/shared/confirmDialogText";
+import { isExcluded } from "../diagnostics/fileExclusions";
+import { toggleFileExclusionAndRefresh } from "../diagnostics/toggleFileExclusion";
 
 export interface EditorContextMenuDeps {
   documentationService: DocumentationService;
@@ -16,6 +18,7 @@ export interface EditorContextMenuDeps {
   refreshArchive: () => Promise<void>;
   docTextPreview: DocTextPreview;
   activityLog: ActivityLog;
+  diagnosticCollection: vscode.DiagnosticCollection;
 }
 
 interface ActionItem extends vscode.QuickPickItem {
@@ -59,79 +62,39 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
       // support (2026-08-15): the correct root is whichever one actually
       // CONTAINS this file, not always the first folder in the workspace.
       const folder = editor ? vscode.workspace.getWorkspaceFolder(editor.document.uri) : undefined;
-      if (!editor || !folder || editor.selection.isEmpty) return;
+      // selection.isEmpty is no longer part of this guard -- 2026-10-09: the
+      // per-file enable/disable toggle below is a file-level setting, not
+      // tied to a selection, and must stay reachable even with the cursor
+      // just sitting somewhere with nothing highlighted.
+      if (!editor || !folder) return;
 
       const repoPath = folder.uri.fsPath;
       const relativePath = vscode.workspace.asRelativePath(editor.document.uri, false);
-      const start = editor.document.offsetAt(editor.selection.start);
-      const end = editor.document.offsetAt(editor.selection.end);
-
-      // Fresh, synchronous, right here -- matches electron/renderer.js's
-      // own matchingRecord/staleRecord computation exactly, including the
-      // order (exact match checked first; stale only checked if there
-      // wasn't one, since a drifted record's hash can never equal a fresh
-      // computation over current code again -- renderer.js:344-349).
-      const matchingRecord = deps.documentationService.findRecordForSelection(repoPath, relativePath, start, end);
-      const staleRecord = matchingRecord
-        ? null
-        : deps.documentationService.findStaleRecordForSelection(repoPath, relativePath, start, end);
 
       const items: ActionItem[] = [];
 
-      if (matchingRecord) {
-        items.push({
-          label: "Edit documentation",
-          // Opens the same spacious Compose panel writing new docs already
-          // uses, pre-filled with the existing text -- replaces the old
-          // redirect into Documented Sections' own (now-removed) inline
-          // <input> edit, a cramped, bad fit for anything long or
-          // multi-line. No DOM to reuse anymore; this IS the real surface.
-          run: async () => {
-            const panel = ComposePanel.openOrReveal(
-              context,
-              deps.documentationService,
-              deps.highlightController,
-              deps.refreshDocumentedSections,
-              deps.activeEditorTracker,
-              deps.activityLog
-            );
-            await panel.beginEditRecord(matchingRecord.recordId, relativePath, repoPath, matchingRecord.docText);
-          },
-        });
-        items.push({
-          label: "Delete documentation",
-          run: async () => {
-            // Same data-loss-prevention pattern as Documented Sections' own
-            // delete button -- the same deleteRecord call, reached by a
-            // second UI path, deserves the same guard rather than a weaker
-            // one just because it's a menu item instead of an icon.
-            const confirmed = await vscode.window.showWarningMessage(
-              "Permanently delete this documentation? This cannot be undone.",
-              { modal: true, detail: `"${truncateForConfirmDialog(matchingRecord.docText)}"` },
-              "Delete"
-            );
-            if (confirmed !== "Delete") return;
+      if (!editor.selection.isEmpty) {
+        const start = editor.document.offsetAt(editor.selection.start);
+        const end = editor.document.offsetAt(editor.selection.end);
 
-            // formatDisplayPath, not the bare relativePath -- multi-root
-            // support (2026-08-15): shows which folder this is in, once
-            // there's more than one open.
-            const displayPath = formatDisplayPath(repoPath, relativePath);
-            try {
-              deps.documentationService.deleteRecord(repoPath, relativePath, matchingRecord.recordId);
-              deps.activityLog.success(`Deleted documentation. (${displayPath})`);
-            } catch (err) {
-              const message = `${err instanceof Error ? err.message : String(err)} (${displayPath})`;
-              deps.activityLog.error(message);
-              vscode.window.showErrorMessage(`rapid-docs: ${message}`);
-              return;
-            }
-            await deps.refreshDocumentedSections();
-          },
-        });
-      } else {
-        if (staleRecord) {
+        // Fresh, synchronous, right here -- matches electron/renderer.js's
+        // own matchingRecord/staleRecord computation exactly, including the
+        // order (exact match checked first; stale only checked if there
+        // wasn't one, since a drifted record's hash can never equal a fresh
+        // computation over current code again -- renderer.js:344-349).
+        const matchingRecord = deps.documentationService.findRecordForSelection(repoPath, relativePath, start, end);
+        const staleRecord = matchingRecord
+          ? null
+          : deps.documentationService.findStaleRecordForSelection(repoPath, relativePath, start, end);
+
+        if (matchingRecord) {
           items.push({
-            label: "Update documentation (code changed)",
+            label: "Edit documentation",
+            // Opens the same spacious Compose panel writing new docs already
+            // uses, pre-filled with the existing text -- replaces the old
+            // redirect into Documented Sections' own (now-removed) inline
+            // <input> edit, a cramped, bad fit for anything long or
+            // multi-line. No DOM to reuse anymore; this IS the real surface.
             run: async () => {
               const panel = ComposePanel.openOrReveal(
                 context,
@@ -141,100 +104,183 @@ export function registerEditorContextMenu(context: vscode.ExtensionContext, deps
                 deps.activeEditorTracker,
                 deps.activityLog
               );
-              // start/end captured HERE, at the moment this menu item is
-              // chosen -- see PendingDriftUpdate's own header for the real
-              // bug this fixes (submit used to re-read whatever was
-              // selected at CLICK time instead, silently misattaching the
-              // update if the selection changed in between).
-              await panel.beginDriftUpdate(staleRecord.recordId, relativePath, repoPath, start, end, staleRecord.docText);
+              await panel.beginEditRecord(matchingRecord.recordId, relativePath, repoPath, matchingRecord.docText);
             },
           });
-        }
-        items.push({
-          label: "Document selection",
-          run: async () => {
-            const panel = ComposePanel.openOrReveal(
-              context,
-              deps.documentationService,
-              deps.highlightController,
-              deps.refreshDocumentedSections,
-              deps.activeEditorTracker,
-              deps.activityLog
-            );
-            // Same capture-at-open fix as Update documentation above --
-            // start/end are already known here (the menu never even shows
-            // without a real, non-empty selection).
-            await panel.beginFreshWrite(repoPath, relativePath, start, end);
-          },
-        });
-
-        // Only offered when there's actually something to attach -- an
-        // empty archive would just be a dead-end menu entry. Section 7.5:
-        // reuses the exact "createQuickPick + preview eye-icon button"
-        // pattern the delete-stale-documentation Quick Fix already proved,
-        // rather than inventing Electron's separate "Attach here" bar --
-        // one selection, one selection here, one attach action for it.
-        const archive = deps.documentationService.loadArchive(repoPath);
-        if (archive.length > 0) {
           items.push({
-            label: "Attach archived record...",
+            label: "Delete documentation",
             run: async () => {
-              type Item = vscode.QuickPickItem & { archiveId: string; docText: string };
-              const previewButton: vscode.QuickInputButton = {
-                iconPath: new vscode.ThemeIcon("eye"),
-                tooltip: "Preview full documentation",
-              };
-              const pickerItems: Item[] = archive.map((entry) => {
-                const firstLine = entry.docText.split("\n")[0] ?? "";
-                const wasTruncated = entry.docText.length > firstLine.length || firstLine.length > 60;
-                const label = firstLine.length > 60 ? firstLine.slice(0, 60) + "…" : firstLine;
-                return {
-                  label: (label || `(archived ${entry.id.slice(0, 8)})`) + (wasTruncated ? " (…)" : ""),
-                  description: `from ${entry.originalFileId}`,
-                  archiveId: entry.id,
-                  docText: entry.docText,
-                  buttons: [previewButton],
-                };
-              });
-
-              const picked = await new Promise<Item | undefined>((resolve) => {
-                const quickPick = vscode.window.createQuickPick<Item>();
-                quickPick.items = pickerItems;
-                quickPick.placeholder = "Select an archived record to attach to this selection";
-                quickPick.onDidTriggerItemButton((e) => {
-                  void deps.docTextPreview.show(e.item.docText, e.item.archiveId.slice(0, 8), repoPath);
-                });
-                quickPick.onDidAccept(() => {
-                  resolve(quickPick.selectedItems[0]);
-                  quickPick.hide();
-                });
-                quickPick.onDidHide(() => {
-                  resolve(undefined);
-                  quickPick.dispose();
-                });
-                quickPick.show();
-              });
-              if (!picked) return;
+              // Same data-loss-prevention pattern as Documented Sections' own
+              // delete button -- the same deleteRecord call, reached by a
+              // second UI path, deserves the same guard rather than a weaker
+              // one just because it's a menu item instead of an icon.
+              const confirmed = await vscode.window.showWarningMessage(
+                "Permanently delete this documentation? This cannot be undone.",
+                { modal: true, detail: `"${truncateForConfirmDialog(matchingRecord.docText)}"` },
+                "Delete"
+              );
+              if (confirmed !== "Delete") return;
 
               // formatDisplayPath, not the bare relativePath -- multi-root
               // support (2026-08-15): shows which folder this is in, once
               // there's more than one open.
-              const attachDisplayPath = formatDisplayPath(repoPath, relativePath);
+              const displayPath = formatDisplayPath(repoPath, relativePath);
               try {
-                deps.documentationService.attachArchivedRecord(repoPath, picked.archiveId, relativePath, start, end);
-                deps.activityLog.success(`Attached archived documentation. (${attachDisplayPath})`);
+                deps.documentationService.deleteRecord(repoPath, relativePath, matchingRecord.recordId);
+                deps.activityLog.success(`Deleted documentation. (${displayPath})`);
               } catch (err) {
-                const message = `${err instanceof Error ? err.message : String(err)} (${attachDisplayPath})`;
+                const message = `${err instanceof Error ? err.message : String(err)} (${displayPath})`;
                 deps.activityLog.error(message);
                 vscode.window.showErrorMessage(`rapid-docs: ${message}`);
                 return;
               }
               await deps.refreshDocumentedSections();
-              await deps.refreshArchive();
             },
           });
+        } else {
+          if (staleRecord) {
+            items.push({
+              label: "Update documentation (code changed)",
+              run: async () => {
+                const panel = ComposePanel.openOrReveal(
+                  context,
+                  deps.documentationService,
+                  deps.highlightController,
+                  deps.refreshDocumentedSections,
+                  deps.activeEditorTracker,
+                  deps.activityLog
+                );
+                // start/end captured HERE, at the moment this menu item is
+                // chosen -- see PendingDriftUpdate's own header for the real
+                // bug this fixes (submit used to re-read whatever was
+                // selected at CLICK time instead, silently misattaching the
+                // update if the selection changed in between).
+                await panel.beginDriftUpdate(staleRecord.recordId, relativePath, repoPath, start, end, staleRecord.docText);
+              },
+            });
+          }
+          items.push({
+            label: "Document selection",
+            run: async () => {
+              const panel = ComposePanel.openOrReveal(
+                context,
+                deps.documentationService,
+                deps.highlightController,
+                deps.refreshDocumentedSections,
+                deps.activeEditorTracker,
+                deps.activityLog
+              );
+              // Same capture-at-open fix as Update documentation above --
+              // start/end are already known here (the menu never even shows
+              // without a real, non-empty selection).
+              await panel.beginFreshWrite(repoPath, relativePath, start, end);
+            },
+          });
+
+          // Only offered when there's actually something to attach -- an
+          // empty archive would just be a dead-end menu entry. Section 7.5:
+          // reuses the exact "createQuickPick + preview eye-icon button"
+          // pattern the delete-stale-documentation Quick Fix already proved,
+          // rather than inventing Electron's separate "Attach here" bar --
+          // one selection, one selection here, one attach action for it.
+          const archive = deps.documentationService.loadArchive(repoPath);
+          if (archive.length > 0) {
+            items.push({
+              label: "Attach archived record...",
+              run: async () => {
+                type Item = vscode.QuickPickItem & { archiveId: string; docText: string };
+                const previewButton: vscode.QuickInputButton = {
+                  iconPath: new vscode.ThemeIcon("eye"),
+                  tooltip: "Preview full documentation",
+                };
+                const copyButton: vscode.QuickInputButton = {
+                  iconPath: new vscode.ThemeIcon("copy"),
+                  tooltip: "Copy to clipboard",
+                };
+                const pickerItems: Item[] = archive.map((entry) => {
+                  const firstLine = entry.docText.split("\n")[0] ?? "";
+                  const wasTruncated = entry.docText.length > firstLine.length || firstLine.length > 60;
+                  const label = firstLine.length > 60 ? firstLine.slice(0, 60) + "…" : firstLine;
+                  return {
+                    label: (label || `(archived ${entry.id.slice(0, 8)})`) + (wasTruncated ? " (…)" : ""),
+                    description: `from ${entry.originalFileId}`,
+                    archiveId: entry.id,
+                    docText: entry.docText,
+                    buttons: [previewButton, copyButton],
+                  };
+                });
+
+                const picked = await new Promise<Item | undefined>((resolve) => {
+                  const quickPick = vscode.window.createQuickPick<Item>();
+                  quickPick.items = pickerItems;
+                  quickPick.placeholder = "Select an archived record to attach to this selection";
+                  quickPick.onDidTriggerItemButton((e) => {
+                    if (e.button === copyButton) {
+                      void vscode.env.clipboard.writeText(e.item.docText);
+                      vscode.window.setStatusBarMessage("rapid-docs: Copied to clipboard", 2000);
+                      return;
+                    }
+                    void deps.docTextPreview.show(e.item.docText, e.item.archiveId.slice(0, 8), repoPath);
+                  });
+                  quickPick.onDidAccept(() => {
+                    resolve(quickPick.selectedItems[0]);
+                    quickPick.hide();
+                  });
+                  quickPick.onDidHide(() => {
+                    resolve(undefined);
+                    quickPick.dispose();
+                  });
+                  quickPick.show();
+                });
+                if (!picked) return;
+
+                // formatDisplayPath, not the bare relativePath -- multi-root
+                // support (2026-08-15): shows which folder this is in, once
+                // there's more than one open.
+                const attachDisplayPath = formatDisplayPath(repoPath, relativePath);
+                try {
+                  deps.documentationService.attachArchivedRecord(repoPath, picked.archiveId, relativePath, start, end);
+                  deps.activityLog.success(`Attached archived documentation. (${attachDisplayPath})`);
+                } catch (err) {
+                  const message = `${err instanceof Error ? err.message : String(err)} (${attachDisplayPath})`;
+                  deps.activityLog.error(message);
+                  vscode.window.showErrorMessage(`rapid-docs: ${message}`);
+                  return;
+                }
+                await deps.refreshDocumentedSections();
+                await deps.refreshArchive();
+              },
+            });
+          }
         }
       }
+
+      // Always offered, regardless of selection -- a file-level setting,
+      // not a selection-dependent action. Computed fresh, same as
+      // everything else above, so the label always reflects the real
+      // current state rather than whatever it was the last time this menu
+      // was opened.
+      const excluded = isExcluded(context.workspaceState, repoPath, relativePath);
+      items.push({
+        label: excluded ? "Enable rapid-docs for this file" : "Disable rapid-docs for this file",
+        // The one shared implementation -- see toggleFileExclusion.ts's own
+        // header for why this must never be reimplemented here: the
+        // Documented Sections title-bar icon calls this exact same
+        // function, so persisting the setting, repainting diagnostics, and
+        // updating the context key that icon's visibility reads all happen
+        // in exactly one place, regardless of which of the two entry
+        // points was actually clicked.
+        run: () =>
+          toggleFileExclusionAndRefresh(
+            context,
+            deps.diagnosticCollection,
+            deps.documentationService,
+            deps.activityLog,
+            repoPath,
+            relativePath,
+            editor.document.uri
+          ),
+      });
 
       if (items.length === 0) return;
 

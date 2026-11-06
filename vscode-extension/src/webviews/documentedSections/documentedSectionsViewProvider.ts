@@ -54,7 +54,8 @@ type FromWebviewMessage =
   | { type: "reveal"; recordId: string }
   | { type: "edit"; recordId: string }
   | { type: "delete"; recordId: string }
-  | { type: "preview"; recordId: string };
+  | { type: "preview"; recordId: string }
+  | { type: "copy"; recordId: string };
 
 // Same edit/delete glyphs electron/renderer.js's own ICONS.edit/ICONS.delete
 // used (renderer.js:26-31) -- kept visually consistent with the original
@@ -73,6 +74,12 @@ const ICON_DELETE =
 // same mechanism the delete Quick Fix's QuickPick also uses.
 const ICON_PREVIEW =
   '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+// 2026-10-10: copying docText out of rapid-docs used to mean select-all
+// inside the preview tab -- a real, if minor, piece of friction compared to
+// a single click, same category as the per-file enable/disable toggle this
+// followed. Standard clipboard glyph, same visual family as the others.
+const ICON_COPY =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
 
 const STYLE = `
   .row { border-bottom: 1px solid var(--vscode-widget-border, transparent); padding: 6px 4px; }
@@ -143,6 +150,7 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
         const ICON_EDIT = ${JSON.stringify(ICON_EDIT)};
         const ICON_DELETE = ${JSON.stringify(ICON_DELETE)};
         const ICON_PREVIEW = ${JSON.stringify(ICON_PREVIEW)};
+        const ICON_COPY = ${JSON.stringify(ICON_COPY)};
         const listEl = document.getElementById('list');
         let items = [];
 
@@ -164,6 +172,7 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
                   '<button class="icon-button preview" title="Preview full documentation">' + ICON_PREVIEW + '</button>' +
                   '<button class="icon-button edit" title="Edit documentation">' + ICON_EDIT + '</button>' +
                   '<button class="icon-button danger delete" title="Delete documentation">' + ICON_DELETE + '</button>' +
+                  '<button class="icon-button copy" title="Copy to clipboard">' + ICON_COPY + '</button>' +
                 '</span>' +
               '</div>' +
               '<div class="text"></div>';
@@ -186,6 +195,10 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
             row.querySelector('.edit').addEventListener('click', (e) => {
               e.stopPropagation();
               vscode.postMessage({ type: 'edit', recordId: item.recordId });
+            });
+            row.querySelector('.copy').addEventListener('click', (e) => {
+              e.stopPropagation();
+              vscode.postMessage({ type: 'copy', recordId: item.recordId });
             });
 
             listEl.appendChild(row);
@@ -289,6 +302,14 @@ export class DocumentedSectionsViewProvider implements vscode.WebviewViewProvide
       const item = this.items.find((i) => i.recordId === message.recordId);
       if (!item) return;
       await this.docTextPreview.show(item.docText, message.recordId.slice(0, 8), repoPath);
+    } else if (message.type === "copy") {
+      const item = this.items.find((i) => i.recordId === message.recordId);
+      if (!item) return;
+      // A transient status bar message, not a modal/notification -- this is
+      // a frequent, low-stakes action (same reasoning as not logging it to
+      // Activity Log, which is reserved for real changes/errors, not reads).
+      await vscode.env.clipboard.writeText(item.docText);
+      vscode.window.setStatusBarMessage("rapid-docs: Copied to clipboard", 2000);
     }
   }
 

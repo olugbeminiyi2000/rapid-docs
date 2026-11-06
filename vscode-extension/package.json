@@ -2,7 +2,7 @@
   "name": "rapid-docs-vscode",
   "displayName": "rapid-docs",
   "description": "AST-based, git-native documentation drift detection, inside the editor.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "EmmanuelObolo",
   "license": "MIT",
   "icon": "resources/marketplace-icon.png",
@@ -111,6 +111,16 @@
       {
         "command": "rapidDocs.showGettingStarted",
         "title": "rapid-docs: Show Getting Started"
+      },
+      {
+        "command": "rapidDocs.disableForActiveFile",
+        "title": "rapid-docs: Disable for Active File",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "rapidDocs.enableForActiveFile",
+        "title": "rapid-docs: Enable for Active File",
+        "icon": "$(eye-closed)"
       }
     ],
     "menus": {
@@ -119,6 +129,18 @@
           "command": "rapidDocs.showEditorActions",
           "when": "editorTextFocus",
           "group": "rapidDocs@1"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "rapidDocs.disableForActiveFile",
+          "when": "view == rapidDocsDocumentedSections && rapidDocs.activeFileExcluded == false",
+          "group": "navigation"
+        },
+        {
+          "command": "rapidDocs.enableForActiveFile",
+          "when": "view == rapidDocsDocumentedSections && rapidDocs.activeFileExcluded == true",
+          "group": "navigation"
         }
       ],
       "commandPalette": [
@@ -288,13 +310,17 @@
     "check-types": "tsc --noEmit -p ./",
     "compile": "npm run build-backend && npm run check-types && node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "package": "npm run build-backend && npm run check-types && node esbuild.js --production"
+    "package": "npm run build-backend && npm run check-types && node esbuild.js --production",
+    "test": "jest"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.2",
+    "jest": "^30.4.2",
+    "ts-jest": "^29.4.12",
     "typescript": "^5.4.0"
   }
 }

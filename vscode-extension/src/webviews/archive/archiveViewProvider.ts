@@ -12,7 +12,10 @@ import { truncateForConfirmDialog } from "../shared/confirmDialogText";
 // from anywhere), so this view has no dependency on activeEditorTracker at
 // all, and refresh() never goes blank just because focus moved to a
 // non-editor panel.
-type FromWebviewMessage = { type: "preview"; archiveId: string } | { type: "discard"; archiveId: string };
+type FromWebviewMessage =
+  | { type: "preview"; archiveId: string }
+  | { type: "discard"; archiveId: string }
+  | { type: "copy"; archiveId: string };
 
 // Multi-root support (2026-08-15): with more than one folder open, there
 // can be more than one separate _archive.json, one per folder -- shown
@@ -40,6 +43,10 @@ const ICON_DISCARD =
 // the exact same "show the full thing" affordance.
 const ICON_PREVIEW =
   '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8Z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+// Same clipboard glyph Documented Sections' own copy button uses --
+// 2026-10-10.
+const ICON_COPY =
+  '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
 
 const STYLE = `
   .row { border-bottom: 1px solid var(--vscode-widget-border, transparent); padding: 6px 4px; }
@@ -101,6 +108,7 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
       scriptJs: `
         const ICON_DISCARD = ${JSON.stringify(ICON_DISCARD)};
         const ICON_PREVIEW = ${JSON.stringify(ICON_PREVIEW)};
+        const ICON_COPY = ${JSON.stringify(ICON_COPY)};
         const listEl = document.getElementById('list');
         let items = [];
 
@@ -123,6 +131,7 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
                 '<span class="origin"></span>' +
                 '<span class="row-actions">' +
                   '<button class="icon-button preview" title="Preview full documentation">' + ICON_PREVIEW + '</button>' +
+                  '<button class="icon-button copy" title="Copy to clipboard">' + ICON_COPY + '</button>' +
                   '<button class="icon-button danger discard" title="Discard permanently">' + ICON_DISCARD + '</button>' +
                 '</span>' +
               '</div>' +
@@ -132,6 +141,9 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
 
             row.querySelector('.preview').addEventListener('click', () => {
               vscode.postMessage({ type: 'preview', archiveId: item.id });
+            });
+            row.querySelector('.copy').addEventListener('click', () => {
+              vscode.postMessage({ type: 'copy', archiveId: item.id });
             });
             row.querySelector('.discard').addEventListener('click', () => {
               vscode.postMessage({ type: 'discard', archiveId: item.id });
@@ -159,6 +171,11 @@ export class ArchiveViewProvider implements vscode.WebviewViewProvider {
       const item = this.items.find((i) => i.id === message.archiveId);
       if (!item) return;
       await this.docTextPreview.show(item.docText, item.id.slice(0, 8), item.repoPath);
+    } else if (message.type === "copy") {
+      const item = this.items.find((i) => i.id === message.archiveId);
+      if (!item) return;
+      await vscode.env.clipboard.writeText(item.docText);
+      vscode.window.setStatusBarMessage("rapid-docs: Copied to clipboard", 2000);
     } else if (message.type === "discard") {
       const item = this.items.find((i) => i.id === message.archiveId);
       if (!item) return;

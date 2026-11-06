@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2022",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    // Mirrors vscode-extension/tsconfig.json's own reasoning exactly:
+    // backend.ts imports the root project's own compiled dist/*.js directly
+    // (see its own header for why), which has no companion .d.ts -- allowJs
+    // lets tsc resolve those for type-checking, typed as `any`. noEmit
+    // because esbuild (esbuild.js), not tsc, produces the real output --
+    // the same CJS-bundling-around-the-ESM-root-package split
+    // vscode-extension already uses successfully for the identical
+    // "allowJs resolving files outside rootDir" conflict a plain tsc build
+    // hits otherwise.
+    "allowJs": true
+  },
+  "include": ["src"],
+  "exclude": ["node_modules", "dist"]
+}
