@@ -16,7 +16,7 @@
 
 AST-based, git-native documentation drift detection: hand-written documentation that stays attached to code *structure*, not to line numbers. A note you write for a function stays correct even after the function moves, gets reformatted, or has code added around it, and gets flagged the moment the code it actually describes changes underneath it.
 
-> **Status: the [VS Code extension](vscode-extension/) is now the primary way to use rapid-docs.** The original Electron desktop app (v0.1.0) is deprecated in favor of it -- kept in this repo for reference, not actively developed further. Both share the same underlying NestJS/AST backend. Not yet on the VS Code Marketplace (pending an account issue on the publishing side); in the meantime, install it from a packaged `.vsix` -- see [Releases](../../releases) for the current version and [Getting started](#getting-started) below for install steps.
+> **Status: the [VS Code extension](vscode-extension/) is now the primary way to use rapid-docs.** There's also an [MCP server](mcp-server/) (published as [`rapid-docs-mcp-server`](https://www.npmjs.com/package/rapid-docs-mcp-server) on npm) for using rapid-docs directly from an AI coding agent like Claude Code. The original Electron desktop app (v0.1.0) is deprecated in favor of the extension -- kept in this repo for reference, not actively developed further. All three share the same underlying NestJS/AST backend. The extension isn't yet on the VS Code Marketplace (pending an account issue on the publishing side); in the meantime, install it from a packaged `.vsix` -- see [Releases](../../releases) for the current version and [Getting started](#getting-started) below for install steps.
 
 ## Screenshots
 
@@ -57,6 +57,7 @@ Documentation is stored as plain JSON, one file per source file, inside a `.rapi
   - Git integration: commit-based diffing for drift checks on every commit, and live file-watching (`chokidar`, gitignore-aware) for changes that haven't been committed yet
   - Documentation storage and drift/message reporting
 - **VS Code extension** (`vscode-extension/`, primary interface): native Problems-panel diagnostics, a Webview Compose panel for writing documentation beside the editor, sidebar views for Documented Sections and Archive, and full multi-root workspace support. Bundled via esbuild into a single self-contained `dist/extension.js` (the compiled backend included), so it has no dependency on this repo's own layout once packaged. See its own [README](vscode-extension/README.md) for the full feature list.
+- **MCP server** (`mcp-server/`, published as [`rapid-docs-mcp-server`](https://www.npmjs.com/package/rapid-docs-mcp-server) on npm): exposes the same documentation actions as tools an AI coding agent (starting with Claude Code) can call directly, reusing the same backend as the VS Code extension. Read-only and create-only tools run freely; anything that can overwrite or permanently delete documentation always requires your explicit confirmation. See its own [README](mcp-server/README.md) for the full tool list.
 - **Electron desktop app** (`electron/`, deprecated): a Monaco-based editor shell that talks to the same NestJS backend via `NestFactory.createApplicationContext`, in-process. Kept in the repo as-is; not actively developed further now that the extension has full parity plus native VS Code integration Electron never had.
 
 ## Getting started
@@ -78,6 +79,29 @@ npm install
 npm run compile   # builds the shared backend, then bundles the extension
 npx vsce package  # produces a real, installable .vsix
 ```
+
+### MCP server (for AI coding agents)
+
+No install step needed. Add this to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "rapid-docs": {
+      "command": "npx",
+      "args": ["-y", "rapid-docs-mcp-server"]
+    }
+  }
+}
+```
+
+Or with the Claude Code CLI:
+
+```sh
+claude mcp add rapid-docs -- npx -y rapid-docs-mcp-server
+```
+
+`npx` fetches and runs it on demand; every tool call carries its own repository path, so one server works across any project on your machine. See the [package README](mcp-server/README.md) for the full tool list and details.
 
 ### Electron desktop app (deprecated)
 
